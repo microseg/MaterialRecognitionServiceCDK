@@ -4,6 +4,7 @@ import { Construct } from 'constructs';
 import { PipelineModule } from './modules/pipeline-module';
 import { EC2Module } from './modules/ec2-module';
 import { VpcModule } from './modules/vpc-module';
+import { ApiGatewayModule } from './modules/api-gateway-module'; // 启用API Gateway模块
 
 export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   githubTokenSecretArn: string;
@@ -22,11 +23,18 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       maxAzs: 2,
     });
 
-               // Create EC2 infrastructure using the VPC
-           const ec2Module = new EC2Module(this, 'EC2Module', {
-             vpc: vpcModule.vpc,
-             instanceType: 't3.micro', // Cheapest instance for testing
-           });
+    // Create EC2 infrastructure using the VPC
+    const ec2Module = new EC2Module(this, 'EC2Module', {
+      vpc: vpcModule.vpc,
+      instanceType: 't3.micro', // Cheapest instance for testing
+    });
+
+    // Create API Gateway pointing to fixed Elastic IP
+    const apiGatewayModule = new ApiGatewayModule(this, 'ApiGatewayModule', {
+      vpc: vpcModule.vpc,
+      ec2Instance: ec2Module.deploymentInstance,
+      targetHost: '18.208.10.108', // 使用固定的Elastic IP，不依赖实例引用
+    });
 
     // Create CI/CD pipeline
     const pipelineModule = new PipelineModule(this, 'PipelineModule', {
@@ -59,9 +67,21 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       description: 'ID of the deployment EC2 instance',
     });
 
+    // Elastic IP 输出移除，现通过外部已分配的固定EIP进行访问
+
     new cdk.CfnOutput(this, 'PipelineUrl', {
       value: `https://${this.region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${pipelineModule.pipeline.pipelineName}/view`,
       description: 'URL to view the CI/CD pipeline',
+    });
+
+    new cdk.CfnOutput(this, 'ApiGatewayUrl', {
+      value: apiGatewayModule.api.url,
+      description: 'URL of the API Gateway endpoint',
+    });
+
+    new cdk.CfnOutput(this, 'ApiGatewayHealthUrl', {
+      value: `${apiGatewayModule.api.url}health`,
+      description: 'Health check endpoint URL',
     });
   }
 }

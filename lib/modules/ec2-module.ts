@@ -94,7 +94,7 @@ export class EC2Module extends Construct {
     userData.addCommands(
       '#!/bin/bash',
       'yum update -y',
-      'yum install -y git python3 python3-pip nginx',
+      'yum install -y git python3 python3-pip nginx wget',
       'systemctl enable nginx',
       'systemctl start nginx',
       '',
@@ -104,6 +104,15 @@ export class EC2Module extends Construct {
       '',
       '# Install Python dependencies',
       'pip3 install flask gunicorn',
+      '',
+      '# Install CodeDeploy agent',
+      'yum install -y ruby wget',
+      'cd /home/ec2-user',
+      'wget https://aws-codedeploy-${AWS::Region}.s3.${AWS::Region}.amazonaws.com/latest/install',
+      'chmod +x ./install',
+      './install auto',
+      'systemctl enable codedeploy-agent',
+      'systemctl start codedeploy-agent',
       '',
       '# Configure nginx as reverse proxy',
       'cat > /etc/nginx/conf.d/material-recognition.conf << EOF',
@@ -116,6 +125,9 @@ export class EC2Module extends Construct {
       '        proxy_set_header X-Real-IP $remote_addr;',
       '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
       '        proxy_set_header X-Forwarded-Proto $scheme;',
+      '        proxy_connect_timeout 300s;',
+      '        proxy_send_timeout 300s;',
+      '        proxy_read_timeout 300s;',
       '    }',
       '}',
       'EOF',
@@ -133,19 +145,62 @@ export class EC2Module extends Construct {
       'Type=simple',
       'User=ec2-user',
       'WorkingDirectory=/opt/material-recognition-service',
-             'ExecStart=/usr/local/bin/gunicorn -w 4 -b 0.0.0.0:5000 app:app',
+      'Environment=PATH=/usr/local/bin:/usr/bin:/bin',
+      'ExecStart=/usr/local/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 app:app',
       'Restart=always',
+      'RestartSec=10',
       '',
       '[Install]',
       'WantedBy=multi-user.target',
       'EOF',
       '',
+      '# Create a simple test application to verify the setup',
+      'cat > /opt/material-recognition-service/app.py << EOF',
+      'from flask import Flask',
+      'app = Flask(__name__)',
+      '',
+      '@app.route("/")',
+      'def hello():',
+      '    return "Material Recognition Service is running!"',
+      '',
+      '@app.route("/health")',
+      'def health():',
+      '    return {"status": "healthy"}, 200',
+      '',
+      '@app.route("/add/<int:a>/<int:b>")',
+      'def add(a, b):',
+      '    return {"result": a + b}, 200',
+      '',
+      'if __name__ == "__main__":',
+      '    app.run(host="0.0.0.0", port=5000, debug=True)',
+      'EOF',
+      '',
+      '# Set proper permissions',
+      'chown -R ec2-user:ec2-user /opt/material-recognition-service/',
+      'chmod +x /opt/material-recognition-service/app.py',
+      '',
+      '# Create requirements.txt',
+      'cat > /opt/material-recognition-service/requirements.txt << EOF',
+      'Flask==2.3.3',
+      'gunicorn==21.2.0',
+      'EOF',
+      '',
+      '# Install Python dependencies',
+      'cd /opt/material-recognition-service/',
+      'pip3 install -r requirements.txt',
+      '',
       '# Enable and start the service',
       'systemctl enable material-recognition.service',
-      'systemctl start material-recognition.service'
+      'systemctl start material-recognition.service',
+      '',
+      '# Wait for service to start',
+      'sleep 10',
+      '',
+      '# Test the application',
+      'curl -f http://localhost:5000/health || echo "Application not ready yet"'
     );
 
-    // Create the EC2 instance
+    // Create the EC2 instance with stable configuration
     this.deploymentInstance = new ec2.Instance(this, 'DeploymentInstance', {
       vpc: props.vpc,
       vpcSubnets: {
@@ -167,11 +222,20 @@ export class EC2Module extends Construct {
           deviceName: '/dev/xvda',
           volume: ec2.BlockDeviceVolume.ebs(20, {
             volumeType: ec2.EbsDeviceVolumeType.GP3,
-            deleteOnTermination: true,
+            deleteOnTermination: false, // 防止实例删除时删除EBS卷
           }),
         },
       ],
     });
+
+    // 设置实例保护，防止意外删除或替换
+    const cfnInstance = this.deploymentInstance.node.defaultChild as ec2.CfnInstance;
+    cfnInstance.addPropertyOverride('DisableApiTermination', true);
+    
+    // 为实例添加固定的Name标签，确保在重新部署时可以识别
+    cdk.Tags.of(this.deploymentInstance).add('Name', 'MaterialRecognitionServiceInstance');
+
+    // Elastic IP 由外部预置与手动关联，CDK 不再创建或管理
 
     // Tag the instance
     cdk.Tags.of(this.deploymentInstance).add('Project', 'MaterialRecognitionService');

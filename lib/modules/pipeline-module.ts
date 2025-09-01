@@ -150,7 +150,7 @@ export class PipelineModule extends Construct {
       applicationName: 'MaterialRecognitionService',
     });
 
-    // Create CodeDeploy deployment group
+    // Create CodeDeploy deployment group targeting existing EC2 instance
     this.deploymentGroup = new codedeploy.ServerDeploymentGroup(this, 'MaterialRecognitionDeploymentGroup', {
       application: codeDeployApplication,
       deploymentGroupName: 'MaterialRecognitionDeploymentGroup',
@@ -159,6 +159,14 @@ export class PipelineModule extends Construct {
         failedDeployment: true,
         stoppedDeployment: true,
       },
+      // 使用标签来识别目标实例，而不是直接引用实例
+      ec2InstanceTags: new codedeploy.InstanceTagSet({
+        'Project': ['MaterialRecognitionService'],
+        'Environment': ['Development'],
+        'Purpose': ['Deployment'],
+      }),
+      // 配置部署策略为就地部署，避免替换实例
+      deploymentConfig: codedeploy.ServerDeploymentConfig.ONE_AT_A_TIME,
     });
 
     // Create the pipeline
