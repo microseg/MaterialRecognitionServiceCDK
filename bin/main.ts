@@ -9,7 +9,7 @@ const app = new cdk.App();
 const githubTokenSecretArn = app.node.tryGetContext('githubTokenSecretArn') || 'arn:aws:secretsmanager:us-east-1:043309364810:secret:github-token-6PK7Gc';
 const githubOwner = app.node.tryGetContext('githubOwner') || 'microseg';
 const githubRepo = app.node.tryGetContext('githubRepo') || 'MaterialRecognitionService';
-const githubBranch = app.node.tryGetContext('githubBranch') || 'master';
+const githubBranch = app.node.tryGetContext('githubBranch') || 'mainline';
 
 new MaterialRecognitionServiceStack(app, 'MaterialRecognitionServiceStack', {
   githubTokenSecretArn,
