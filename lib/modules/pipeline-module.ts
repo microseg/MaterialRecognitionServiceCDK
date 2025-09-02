@@ -17,6 +17,7 @@ export interface PipelineModuleProps {
   githubBranch: string;
   deploymentInstance: ec2.Instance;
   vpc: ec2.IVpc;
+  ecrRepository?: ecr.IRepository; // Add optional ECR repository
 }
 
 export class PipelineModule extends Construct {
@@ -37,14 +38,19 @@ export class PipelineModule extends Construct {
       encryption: s3.BucketEncryption.S3_MANAGED,
     });
 
-    // ECR repository (extracted into its own module)
-    const ecrModule = new EcrModule(this, 'EcrModule', {
-      repositoryName: 'material-recognition',
-      importExisting: true,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      imageScanOnPush: true,
-    });
-    this.ecrRepository = ecrModule.repository;
+    // Use provided ECR repository or create one
+    if (props.ecrRepository) {
+      this.ecrRepository = props.ecrRepository;
+    } else {
+      // Create ECR repository if not provided
+      const ecrModule = new EcrModule(this, 'EcrModule', {
+        repositoryName: 'material-recognition',
+        importExisting: true,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        imageScanOnPush: true,
+      });
+      this.ecrRepository = ecrModule.repository;
+    }
 
     // Create IAM role for CodePipeline
     const pipelineRole = new iam.Role(this, 'PipelineRole', {

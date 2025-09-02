@@ -5,12 +5,18 @@ import { PipelineModule } from './modules/pipeline-module';
 import { EC2Module } from './modules/ec2-module';
 import { VpcModule } from './modules/vpc-module';
 import { ApiGatewayModule } from './modules/api-gateway-module'; // Enable API Gateway module
+import { EcrModule } from './modules/ecr-module'; // Add ECR module import
+// import { S3Module, DynamoDBModule } from './modules/storage'; // Add storage modules
 
 export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   githubTokenSecretArn: string;
   githubOwner: string;
   githubRepo: string;
   githubBranch: string;
+  // Storage configuration
+  s3BucketName?: string;
+  dynamoDBTableName?: string;
+  enableStorageAutoScaling?: boolean;
 }
 
 export class MaterialRecognitionServiceStack extends cdk.Stack {
@@ -29,12 +35,41 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       instanceType: 't3.micro', // Cheapest instance for testing
     });
 
+    // Create ECR repository for Docker images
+    const ecrModule = new EcrModule(this, 'EcrModule', {
+      repositoryName: 'material-recognition-service',
+      importExisting: false,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      imageScanOnPush: true,
+    });
+
     // Create API Gateway pointing to fixed Elastic IP
     const apiGatewayModule = new ApiGatewayModule(this, 'ApiGatewayModule', {
       vpc: vpcModule.vpc,
       ec2Instance: ec2Module.deploymentInstance,
       targetHost: '18.208.10.108', // Use fixed Elastic IP, not dependent on instance reference
     });
+
+    // Create S3 storage for customer images
+    // const s3Module = new S3Module(this, 'S3Module', {
+    //   bucketName: props.s3BucketName || 'matsight-customer-images',
+    //   enableVersioning: true,
+    //   enableLifecycleRules: true,
+    //   retentionDays: 365,
+    //   corsOrigins: ['*'],
+    //   enableAccessLogging: true,
+    // });
+
+    // Create DynamoDB table for image metadata
+    // const dynamoDBModule = new DynamoDBModule(this, 'DynamoDBModule', {
+    //   tableName: props.dynamoDBTableName || 'CustomerImages',
+    //   billingMode: 'PAY_PER_REQUEST', // Start with pay-per-request for cost optimization
+    //   enablePointInTimeRecovery: true,
+    //   enableAutoScaling: props.enableStorageAutoScaling ?? true,
+    //   minCapacity: 1,
+    //   maxCapacity: 100,
+    //   enableStreaming: false, // Enable if you need change tracking
+    // });
 
     // Create CI/CD pipeline
     const pipelineModule = new PipelineModule(this, 'PipelineModule', {
@@ -44,6 +79,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       githubBranch: props.githubBranch,
       deploymentInstance: ec2Module.deploymentInstance,
       vpc: vpcModule.vpc,
+      ecrRepository: ecrModule.repository, // Pass ECR repository to pipeline
     });
 
     // Output important information
@@ -67,7 +103,13 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       description: 'ID of the deployment EC2 instance',
     });
 
-    // Elastic IP 输出移除，现通过外部已分配的固定EIP进行访问
+    // Add ECR repository output
+    new cdk.CfnOutput(this, 'EcrRepositoryUri', {
+      value: ecrModule.repository.repositoryUri,
+      description: 'URI of the ECR repository for Docker images',
+    });
+
+    // Elastic IP output removed, now using externally allocated fixed EIP for access
 
     new cdk.CfnOutput(this, 'PipelineUrl', {
       value: `https://${this.region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${pipelineModule.pipeline.pipelineName}/view`,
@@ -83,5 +125,26 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       value: `${apiGatewayModule.api.url}health`,
       description: 'Health check endpoint URL',
     });
+
+    // Storage outputs
+    // new cdk.CfnOutput(this, 'S3BucketName', {
+    //   value: s3Module.customerImagesBucket.bucketName,
+    //   description: 'Name of the S3 bucket for customer images',
+    // });
+
+    // new cdk.CfnOutput(this, 'S3BucketArn', {
+    //   value: s3Module.customerImagesBucket.bucketArn,
+    //   description: 'ARN of the S3 bucket for customer images',
+    // });
+
+    // new cdk.CfnOutput(this, 'DynamoDBTableName', {
+    //   value: dynamoDBModule.customerImagesTable.tableName,
+    //   description: 'Name of the DynamoDB table for customer image metadata',
+    // });
+
+    // new cdk.CfnOutput(this, 'DynamoDBTableArn', {
+    //   value: dynamoDBModule.customerImagesTable.tableArn,
+    //   description: 'ARN of the DynamoDB table for customer image metadata',
+    // });
   }
 }

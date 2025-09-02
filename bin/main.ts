@@ -11,10 +11,19 @@ const githubOwner = app.node.tryGetContext('githubOwner') || 'microseg';
 const githubRepo = app.node.tryGetContext('githubRepo') || 'MaterialRecognitionService';
 const githubBranch = app.node.tryGetContext('githubBranch') || 'mainline';
 
+// Storage configuration
+const s3BucketName = app.node.tryGetContext('s3BucketName') || 'matsight-customer-images';
+const dynamoDBTableName = app.node.tryGetContext('dynamoDBTableName') || 'CustomerImages';
+const enableStorageAutoScaling = app.node.tryGetContext('enableStorageAutoScaling') !== false;
+
 new MaterialRecognitionServiceStack(app, 'MaterialRecognitionServiceStack', {
   githubTokenSecretArn,
   githubOwner,
   githubRepo,
   githubBranch,
+  // Storage configuration
+  s3BucketName,
+  dynamoDBTableName,
+  enableStorageAutoScaling,
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
 });

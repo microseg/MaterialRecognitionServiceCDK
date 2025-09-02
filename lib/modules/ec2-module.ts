@@ -76,6 +76,26 @@ export class EC2Module extends Construct {
       })
     );
 
+    // Allow DynamoDB access for the application
+    this.instanceRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'dynamodb:GetItem',
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:DeleteItem',
+          'dynamodb:Query',
+          'dynamodb:Scan',
+          'dynamodb:DescribeTable'
+        ],
+        resources: [
+          'arn:aws:dynamodb:us-east-1:043309364810:table/CustomerImages-Dev',
+          'arn:aws:dynamodb:us-east-1:043309364810:table/CustomerImages-Dev/index/*'
+        ],
+      })
+    );
+
     // Add CodeDeploy permissions for the EC2 instance
     this.instanceRole.addToPolicy(
       new iam.PolicyStatement({
