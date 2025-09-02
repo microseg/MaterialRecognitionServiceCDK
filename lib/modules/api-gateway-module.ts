@@ -8,7 +8,7 @@ import { Construct } from 'constructs';
 export interface ApiGatewayModuleProps {
   vpc: ec2.IVpc;
   ec2Instance: ec2.Instance;
-  targetHost: string; // EIP 或域名
+  targetHost: string; // EIP or domain name
 }
 
 export class ApiGatewayModule extends Construct {
@@ -34,7 +34,7 @@ export class ApiGatewayModule extends Construct {
       },
       deployOptions: {
         stageName: 'prod',
-        // 关闭日志与数据追踪以避免需要在账户层设置CloudWatch日志角色
+        // disable logging and data tracing to avoid setting CloudWatch log role at account level
         loggingLevel: apigateway.MethodLoggingLevel.OFF,
         dataTraceEnabled: false,
         metricsEnabled: false,
@@ -55,7 +55,7 @@ export class ApiGatewayModule extends Construct {
       uri: `http://${props.targetHost}:80`,
     });
 
-    // 移除通配代理，改为显式定义各路由
+    // Remove wildcard proxy, define each route explicitly
 
     // Add specific endpoints for better API design
     const healthResource = this.api.root.addResource('health');

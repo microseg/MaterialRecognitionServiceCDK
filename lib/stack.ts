@@ -4,7 +4,7 @@ import { Construct } from 'constructs';
 import { PipelineModule } from './modules/pipeline-module';
 import { EC2Module } from './modules/ec2-module';
 import { VpcModule } from './modules/vpc-module';
-import { ApiGatewayModule } from './modules/api-gateway-module'; // 启用API Gateway模块
+import { ApiGatewayModule } from './modules/api-gateway-module'; // Enable API Gateway module
 
 export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   githubTokenSecretArn: string;
@@ -33,7 +33,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     const apiGatewayModule = new ApiGatewayModule(this, 'ApiGatewayModule', {
       vpc: vpcModule.vpc,
       ec2Instance: ec2Module.deploymentInstance,
-      targetHost: '18.208.10.108', // 使用固定的Elastic IP，不依赖实例引用
+      targetHost: '18.208.10.108', // Use fixed Elastic IP, not dependent on instance reference
     });
 
     // Create CI/CD pipeline
