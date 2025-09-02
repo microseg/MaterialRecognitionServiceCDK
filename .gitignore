@@ -1,6 +1,22 @@
-# CDK Build Output
+# CDK Build Output and Compiled Files
 cdk.out/
 *.js.map
+*.js
+*.d.ts
+!bin/main.js
+!lib/stack.js
+!lib/modules/*.js
+
+# CDK Context and Asset files
+cdk.context.json
+*.zip
+*.tar.gz
+
+# CDK Diff and Deployment outputs
+cdk-diff.txt
+deploy/
+build/
+dist/
 
 # Node.js Dependencies
 node_modules/
@@ -8,12 +24,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# TypeScript Build Output
-*.js
-*.d.ts
-!bin/main.js
-!lib/stack.js
-!lib/modules/*.js
+# TypeScript Build Output (already covered above, but keeping for clarity)
+# *.js
+# *.d.ts
 
 # IDE and Editor Files
 .vscode/
@@ -100,13 +113,6 @@ public
 tmp/
 temp/
 
-# AWS CDK Context
-cdk.context.json
-
-# CDK Asset files
-*.zip
-*.tar.gz
-
 # Test files
 test/
 tests/
@@ -128,15 +134,24 @@ config.local.*
 *.backup
 *.old
 
-# CDK Diff output
-cdk-diff.txt
-
-# Deployment artifacts
-deploy/
-build/
-dist/
-
 # IDE specific files
 .vscode/settings.json
 .vscode/launch.json
 .vscode/tasks.json
+
+# CDK specific compiled modules
+lib/modules/**/*.js
+lib/modules/**/*.d.ts
+lib/**/*.js
+lib/**/*.d.ts
+bin/**/*.js
+bin/**/*.d.ts
+
+# CDK deployment artifacts
+*.template.json
+*.assets.json
+*.manifest.json
+*.tree.json
+
+# CDK bootstrap artifacts
+bootstrap/
