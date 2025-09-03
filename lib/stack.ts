@@ -6,6 +6,7 @@ import { EC2Module } from './modules/ec2-module';
 import { VpcModule } from './modules/vpc-module';
 import { ApiGatewayModule } from './modules/api-gateway-module'; // Enable API Gateway module
 import { EcrModule } from './modules/ecr-module'; // Add ECR module import
+import { AlbModule } from './modules/alb-module'; // Add ALB module import
 // import { S3Module, DynamoDBModule } from './modules/storage'; // Add storage modules
 
 export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
@@ -17,6 +18,8 @@ export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   s3BucketName?: string;
   dynamoDBTableName?: string;
   enableStorageAutoScaling?: boolean;
+  // Infrastructure configuration
+  elasticIpAllocationId?: string; // Elastic IP allocation ID for stable IP
 }
 
 export class MaterialRecognitionServiceStack extends cdk.Stack {
@@ -43,11 +46,17 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       imageScanOnPush: true,
     });
 
-    // Create API Gateway pointing to fixed Elastic IP
+    // Create Application Load Balancer for stable endpoint
+    const albModule = new AlbModule(this, 'AlbModule', {
+      vpc: vpcModule.vpc,
+      ec2Instance: ec2Module.deploymentInstance,
+    });
+
+    // Create API Gateway pointing to ALB for stable endpoint
     const apiGatewayModule = new ApiGatewayModule(this, 'ApiGatewayModule', {
       vpc: vpcModule.vpc,
       ec2Instance: ec2Module.deploymentInstance,
-      targetHost: '18.208.10.108', // Use fixed Elastic IP, not dependent on instance reference
+      targetHost: albModule.loadBalancer.loadBalancerDnsName, // Use ALB DNS name
     });
 
     // Create S3 storage for customer images

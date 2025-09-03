@@ -16,6 +16,9 @@ const s3BucketName = app.node.tryGetContext('s3BucketName') || 'matsight-custome
 const dynamoDBTableName = app.node.tryGetContext('dynamoDBTableName') || 'CustomerImages';
 const enableStorageAutoScaling = app.node.tryGetContext('enableStorageAutoScaling') !== false;
 
+// Infrastructure configuration
+const elasticIpAllocationId = app.node.tryGetContext('elasticIpAllocationId') || 'eipalloc-00be8bd306afb1cf7';
+
 new MaterialRecognitionServiceStack(app, 'MaterialRecognitionServiceStack', {
   githubTokenSecretArn,
   githubOwner,
@@ -25,5 +28,7 @@ new MaterialRecognitionServiceStack(app, 'MaterialRecognitionServiceStack', {
   s3BucketName,
   dynamoDBTableName,
   enableStorageAutoScaling,
+  // Infrastructure configuration
+  elasticIpAllocationId,
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
 });
