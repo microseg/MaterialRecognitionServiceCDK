@@ -67,6 +67,11 @@ export class MaskTerialModule extends Construct {
     if (props.modelsS3Bucket) {
       props.modelsS3Bucket.grantRead(this.serviceRole);
     }
+    
+    // Grant ECR permissions for pulling Docker images
+    this.serviceRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonEC2ContainerRegistryReadOnly')
+    );
 
     // Add additional permissions for MaskTerial
     this.serviceRole.addToPolicy(new iam.PolicyStatement({
