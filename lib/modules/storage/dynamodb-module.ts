@@ -4,40 +4,29 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
 export interface DynamoDBModuleProps {
-  tableName: string;
-  billingMode?: 'PAY_PER_REQUEST' | 'PROVISIONED';
-  readCapacity?: number;
-  writeCapacity?: number;
+  tableName?: string;
+  billingMode?: dynamodb.BillingMode;
   enablePointInTimeRecovery?: boolean;
   enableAutoScaling?: boolean;
   minCapacity?: number;
   maxCapacity?: number;
   enableStreaming?: boolean;
-  streamViewType?: dynamodb.StreamViewType;
+  removalPolicy?: cdk.RemovalPolicy;
 }
 
 export class DynamoDBModule extends Construct {
   public readonly customerImagesTable: dynamodb.Table;
+  public readonly tableArn: string;
+  public readonly tableName: string;
 
-  constructor(scope: Construct, id: string, props: DynamoDBModuleProps) {
+  constructor(scope: Construct, id: string, props: DynamoDBModuleProps = {}) {
     super(scope, id);
 
-    const {
-      tableName,
-      billingMode = 'PAY_PER_REQUEST',
-      readCapacity = 5,
-      writeCapacity = 5,
-      enablePointInTimeRecovery = true,
-      enableAutoScaling = true,
-      minCapacity = 1,
-      maxCapacity = 100,
-      enableStreaming = false,
-      streamViewType = dynamodb.StreamViewType.NEW_AND_OLD_IMAGES
-    } = props;
+    const tableName = props.tableName || 'CustomerImages';
 
-    // Create DynamoDB Table for tracking customer images with enhanced schema
-    const tableProps: dynamodb.TableProps = {
-      tableName: tableName,
+    // Create DynamoDB table for customer image metadata
+    this.customerImagesTable = new dynamodb.Table(this, 'CustomerImagesTable', {
+      tableName,
       partitionKey: {
         name: 'customerID',
         type: dynamodb.AttributeType.STRING,
@@ -46,71 +35,14 @@ export class DynamoDBModule extends Construct {
         name: 'imageID',
         type: dynamodb.AttributeType.STRING,
       },
-      billingMode: billingMode === 'PROVISIONED'
-        ? dynamodb.BillingMode.PROVISIONED
-        : dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      pointInTimeRecovery: enablePointInTimeRecovery,
+      billingMode: props.billingMode ?? dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecovery: props.enablePointInTimeRecovery ?? true,
+      removalPolicy: props.removalPolicy ?? cdk.RemovalPolicy.RETAIN,
+      stream: props.enableStreaming ? dynamodb.StreamViewType.NEW_AND_OLD_IMAGES : undefined,
       timeToLiveAttribute: 'expiresAt',
-      encryption: dynamodb.TableEncryption.AWS_MANAGED,
-    };
-
-    // Add provisioned capacity for production
-    if (billingMode === 'PROVISIONED') {
-      (tableProps as any).readCapacity = readCapacity;
-      (tableProps as any).writeCapacity = writeCapacity;
-    }
-
-    // Add streaming if enabled
-    if (enableStreaming) {
-      (tableProps as any).stream = streamViewType;
-    }
-
-    this.customerImagesTable = new dynamodb.Table(this, 'CustomerImagesTable', tableProps);
-
-    // Add GSI for querying by type and status
-    this.customerImagesTable.addGlobalSecondaryIndex({
-      indexName: 'TypeStatusIndex',
-      partitionKey: {
-        name: 'type',
-        type: dynamodb.AttributeType.STRING,
-      },
-      sortKey: {
-        name: 'status',
-        type: dynamodb.AttributeType.STRING,
-      },
-      projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    // Add GSI for querying by creation time
-    this.customerImagesTable.addGlobalSecondaryIndex({
-      indexName: 'CreatedAtIndex',
-      partitionKey: {
-        name: 'customerID',
-        type: dynamodb.AttributeType.STRING,
-      },
-      sortKey: {
-        name: 'createdAt',
-        type: dynamodb.AttributeType.NUMBER,
-      },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Add GSI for querying by material type
-    this.customerImagesTable.addGlobalSecondaryIndex({
-      indexName: 'MaterialTypeIndex',
-      partitionKey: {
-        name: 'materialType',
-        type: dynamodb.AttributeType.STRING,
-      },
-      sortKey: {
-        name: 'createdAt',
-        type: dynamodb.AttributeType.NUMBER,
-      },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Add GSI for querying by processing status
+    // Add Global Secondary Indexes for efficient querying
     this.customerImagesTable.addGlobalSecondaryIndex({
       indexName: 'ProcessingStatusIndex',
       partitionKey: {
@@ -124,11 +56,10 @@ export class DynamoDBModule extends Construct {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    // Add GSI for querying by image format
     this.customerImagesTable.addGlobalSecondaryIndex({
-      indexName: 'ImageFormatIndex',
+      indexName: 'MaterialTypeIndex',
       partitionKey: {
-        name: 'imageFormat',
+        name: 'materialType',
         type: dynamodb.AttributeType.STRING,
       },
       sortKey: {
@@ -138,19 +69,32 @@ export class DynamoDBModule extends Construct {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    // Configure auto-scaling for GSIs
-    if (enableAutoScaling) {
-      // Auto-scaling for main table
+    this.customerImagesTable.addGlobalSecondaryIndex({
+      indexName: 'TypeIndex',
+      partitionKey: {
+        name: 'type',
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: 'createdAt',
+        type: dynamodb.AttributeType.NUMBER,
+      },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Configure auto-scaling if enabled and using provisioned billing
+    if (props.enableAutoScaling && props.billingMode === dynamodb.BillingMode.PROVISIONED) {
       const readScaling = this.customerImagesTable.autoScaleReadCapacity({
-        minCapacity: minCapacity,
-        maxCapacity: maxCapacity,
+        minCapacity: props.minCapacity ?? 1,
+        maxCapacity: props.maxCapacity ?? 100,
       });
 
       const writeScaling = this.customerImagesTable.autoScaleWriteCapacity({
-        minCapacity: minCapacity,
-        maxCapacity: maxCapacity,
+        minCapacity: props.minCapacity ?? 1,
+        maxCapacity: props.maxCapacity ?? 100,
       });
 
+      // Add scaling policies
       readScaling.scaleOnUtilization({
         targetUtilizationPercent: 70,
       });
@@ -158,57 +102,55 @@ export class DynamoDBModule extends Construct {
       writeScaling.scaleOnUtilization({
         targetUtilizationPercent: 70,
       });
-
-      // Auto-scaling for GSIs
-      const gsiNames = ['TypeStatusIndex', 'CreatedAtIndex', 'MaterialTypeIndex', 'ProcessingStatusIndex', 'ImageFormatIndex'];
-      
-      gsiNames.forEach(gsiName => {
-        const gsiReadScaling = this.customerImagesTable.autoScaleGlobalSecondaryIndexReadCapacity(gsiName, {
-          minCapacity: minCapacity,
-          maxCapacity: maxCapacity,
-        });
-
-        const gsiWriteScaling = this.customerImagesTable.autoScaleGlobalSecondaryIndexWriteCapacity(gsiName, {
-          minCapacity: minCapacity,
-          maxCapacity: maxCapacity,
-        });
-
-        gsiReadScaling.scaleOnUtilization({
-          targetUtilizationPercent: 70,
-        });
-
-        gsiWriteScaling.scaleOnUtilization({
-          targetUtilizationPercent: 70,
-        });
-      });
     }
+
+    this.tableArn = this.customerImagesTable.tableArn;
+    this.tableName = this.customerImagesTable.tableName;
+
+    // Create IAM managed policy for EC2 instances to access DynamoDB
+    const dynamoDBAccessPolicy = new iam.ManagedPolicy(this, 'DynamoDBAccessPolicy', {
+      statements: [
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'dynamodb:GetItem',
+            'dynamodb:PutItem',
+            'dynamodb:UpdateItem',
+            'dynamodb:DeleteItem',
+            'dynamodb:Query',
+            'dynamodb:Scan',
+            'dynamodb:BatchGetItem',
+            'dynamodb:BatchWriteItem',
+            'dynamodb:DescribeTable',
+          ],
+          resources: [
+            this.customerImagesTable.tableArn,
+            `${this.customerImagesTable.tableArn}/index/*`,
+          ],
+        }),
+      ],
+    });
+
+    // Output the policy ARN for attachment to EC2 instances
+    new cdk.CfnOutput(this, 'DynamoDBAccessPolicyArn', {
+      value: dynamoDBAccessPolicy.managedPolicyArn,
+      description: 'ARN of the DynamoDB access policy for EC2 instances',
+    });
   }
 
-  /**
-   * Grant read permissions to the specified grantee
-   */
-  public grantReadData(grantee: iam.IGrantable): iam.Grant {
-    return this.customerImagesTable.grantReadData(grantee);
+  public grantReadWriteData(identity: iam.IGrantable): iam.Grant {
+    return this.customerImagesTable.grantReadWriteData(identity);
   }
 
-  /**
-   * Grant write permissions to the specified grantee
-   */
-  public grantWriteData(grantee: iam.IGrantable): iam.Grant {
-    return this.customerImagesTable.grantWriteData(grantee);
+  public grantReadData(identity: iam.IGrantable): iam.Grant {
+    return this.customerImagesTable.grantReadData(identity);
   }
 
-  /**
-   * Grant read/write permissions to the specified grantee
-   */
-  public grantReadWriteData(grantee: iam.IGrantable): iam.Grant {
-    return this.customerImagesTable.grantReadWriteData(grantee);
+  public grantWriteData(identity: iam.IGrantable): iam.Grant {
+    return this.customerImagesTable.grantWriteData(identity);
   }
 
-  /**
-   * Grant full access permissions to the specified grantee
-   */
-  public grantFullAccess(grantee: iam.IGrantable): iam.Grant {
-    return this.customerImagesTable.grantFullAccess(grantee);
+  public grantFullAccess(identity: iam.IGrantable): iam.Grant {
+    return this.customerImagesTable.grantFullAccess(identity);
   }
 }

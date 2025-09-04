@@ -1,13 +1,16 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 import { PipelineModule } from './modules/pipeline-module';
 import { EC2Module } from './modules/ec2-module';
 import { VpcModule } from './modules/vpc-module';
-import { ApiGatewayModule } from './modules/api-gateway-module'; // Enable API Gateway module
-import { EcrModule } from './modules/ecr-module'; // Add ECR module import
-import { AlbModule } from './modules/alb-module'; // Add ALB module import
-// import { S3Module, DynamoDBModule } from './modules/storage'; // Add storage modules
+import { ApiGatewayModule } from './modules/api-gateway-module';
+import { EcrModule } from './modules/ecr-module';
+import { AlbModule } from './modules/alb-module';
+import { S3Module, DynamoDBModule, ModelsS3Module } from './modules/storage';
+import { MaskTerialModule } from './modules/maskterial-module';
 
 export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   githubTokenSecretArn: string;
@@ -60,25 +63,54 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     });
 
     // Create S3 storage for customer images
-    // const s3Module = new S3Module(this, 'S3Module', {
-    //   bucketName: props.s3BucketName || 'matsight-customer-images',
-    //   enableVersioning: true,
-    //   enableLifecycleRules: true,
-    //   retentionDays: 365,
-    //   corsOrigins: ['*'],
-    //   enableAccessLogging: true,
-    // });
+    const s3Module = new S3Module(this, 'S3Module', {
+      bucketName: props.s3BucketName || 'matsight-customer-images',
+      enableVersioning: true,
+      enableLifecycleRules: true,
+      retentionDays: 365,
+      corsOrigins: ['*'],
+      enableAccessLogging: true,
+    });
 
     // Create DynamoDB table for image metadata
-    // const dynamoDBModule = new DynamoDBModule(this, 'DynamoDBModule', {
-    //   tableName: props.dynamoDBTableName || 'CustomerImages',
-    //   billingMode: 'PAY_PER_REQUEST', // Start with pay-per-request for cost optimization
-    //   enablePointInTimeRecovery: true,
-    //   enableAutoScaling: props.enableStorageAutoScaling ?? true,
-    //   minCapacity: 1,
-    //   maxCapacity: 100,
-    //   enableStreaming: false, // Enable if you need change tracking
-    // });
+    const dynamoDBModule = new DynamoDBModule(this, 'DynamoDBModule', {
+      tableName: props.dynamoDBTableName || 'CustomerImages',
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      enablePointInTimeRecovery: true,
+      enableAutoScaling: props.enableStorageAutoScaling ?? true,
+      minCapacity: 1,
+      maxCapacity: 100,
+      enableStreaming: false,
+    });
+
+    // Create S3 bucket for MaskTerial models
+    const modelsS3Module = new ModelsS3Module(this, 'ModelsS3Module', {
+      bucketName: 'matsight-maskterial-models-v2',
+      versioned: true,
+      lifecycleRules: [
+        {
+          id: 'DeleteOldVersions',
+          noncurrentVersionExpiration: cdk.Duration.days(60),
+          noncurrentVersionTransitions: [
+            {
+              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+              transitionAfter: cdk.Duration.days(30),
+            },
+          ],
+        },
+      ],
+    });
+
+    // Create MaskTerial service
+    const maskterialModule = new MaskTerialModule(this, 'MaskTerialModule', {
+      vpc: vpcModule.vpc,
+      ec2Instance: ec2Module.deploymentInstance,
+      s3Bucket: s3Module.customerImagesBucket,
+      dynamoDBTable: dynamoDBModule.customerImagesTable,
+      modelsS3Bucket: modelsS3Module.bucket,
+      enableGPU: false, // CPU-only by default; set true if GPU needed
+      modelPath: '/opt/maskterial/models',
+    });
 
     // Create CI/CD pipeline
     const pipelineModule = new PipelineModule(this, 'PipelineModule', {
@@ -88,7 +120,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       githubBranch: props.githubBranch,
       deploymentInstance: ec2Module.deploymentInstance,
       vpc: vpcModule.vpc,
-      ecrRepository: ecrModule.repository, // Pass ECR repository to pipeline
+      ecrRepository: ecrModule.repository,
     });
 
     // Output important information
@@ -118,8 +150,6 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       description: 'URI of the ECR repository for Docker images',
     });
 
-    // Elastic IP output removed, now using externally allocated fixed EIP for access
-
     new cdk.CfnOutput(this, 'PipelineUrl', {
       value: `https://${this.region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${pipelineModule.pipeline.pipelineName}/view`,
       description: 'URL to view the CI/CD pipeline',
@@ -136,24 +166,40 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     });
 
     // Storage outputs
-    // new cdk.CfnOutput(this, 'S3BucketName', {
-    //   value: s3Module.customerImagesBucket.bucketName,
-    //   description: 'Name of the S3 bucket for customer images',
-    // });
+    new cdk.CfnOutput(this, 'S3BucketName', {
+      value: s3Module.customerImagesBucket.bucketName,
+      description: 'Name of the S3 bucket for customer images',
+    });
 
-    // new cdk.CfnOutput(this, 'S3BucketArn', {
-    //   value: s3Module.customerImagesBucket.bucketArn,
-    //   description: 'ARN of the S3 bucket for customer images',
-    // });
+    new cdk.CfnOutput(this, 'S3BucketArn', {
+      value: s3Module.customerImagesBucket.bucketArn,
+      description: 'ARN of the S3 bucket for customer images',
+    });
 
-    // new cdk.CfnOutput(this, 'DynamoDBTableName', {
-    //   value: dynamoDBModule.customerImagesTable.tableName,
-    //   description: 'Name of the DynamoDB table for customer image metadata',
-    // });
+    new cdk.CfnOutput(this, 'DynamoDBTableName', {
+      value: dynamoDBModule.customerImagesTable.tableName,
+      description: 'Name of the DynamoDB table for customer image metadata',
+    });
 
-    // new cdk.CfnOutput(this, 'DynamoDBTableArn', {
-    //   value: dynamoDBModule.customerImagesTable.tableArn,
-    //   description: 'ARN of the DynamoDB table for customer image metadata',
-    // });
+    new cdk.CfnOutput(this, 'DynamoDBTableArn', {
+      value: dynamoDBModule.customerImagesTable.tableArn,
+      description: 'ARN of the DynamoDB table for customer image metadata',
+    });
+
+    // MaskTerial outputs
+    new cdk.CfnOutput(this, 'MaskTerialInstanceId', {
+      value: maskterialModule.maskterialService.instanceId,
+      description: 'ID of the MaskTerial EC2 instance',
+    });
+
+    new cdk.CfnOutput(this, 'MaskTerialPublicIP', {
+      value: maskterialModule.maskterialService.instancePublicIp,
+      description: 'Public IP of the MaskTerial EC2 instance',
+    });
+
+    new cdk.CfnOutput(this, 'MaskTerialServiceURL', {
+      value: `http://${maskterialModule.maskterialService.instancePublicIp}:5000`,
+      description: 'URL of the MaskTerial service',
+    });
   }
 }
