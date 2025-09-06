@@ -7,6 +7,8 @@ export interface EC2ModuleProps {
   vpc: ec2.IVpc;
   instanceType?: string;
   keyName?: string; // Made optional
+  importExisting?: boolean; // Import existing instance instead of creating new one
+  existingInstanceId?: string; // ID of existing instance to import
 }
 
 export class EC2Module extends Construct {
@@ -179,9 +181,9 @@ export class EC2Module extends Construct {
       ],
     });
 
-    // Enable instance termination protection
+    // Disable instance termination protection to allow stack deletion
     const cfnInstance = this.deploymentInstance.node.defaultChild as ec2.CfnInstance;
-    cfnInstance.addPropertyOverride('DisableApiTermination', true);
+    cfnInstance.addPropertyOverride('DisableApiTermination', false);
     
     // Tag instance with a stable Name for identification
     cdk.Tags.of(this.deploymentInstance).add('Name', 'MaterialRecognitionServiceInstance');

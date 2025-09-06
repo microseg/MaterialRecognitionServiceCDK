@@ -23,6 +23,8 @@ export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   enableStorageAutoScaling?: boolean;
   // Infrastructure configuration
   elasticIpAllocationId?: string; // Elastic IP allocation ID for stable IP
+  // Import existing resources configuration
+  importExistingResources?: boolean; // Import existing resources instead of creating new ones
 }
 
 export class MaterialRecognitionServiceStack extends cdk.Stack {
@@ -39,12 +41,14 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     const ec2Module = new EC2Module(this, 'EC2Module', {
       vpc: vpcModule.vpc,
       instanceType: 't3.micro', // Cheapest instance for testing
+      importExisting: props.importExistingResources ?? true, // Default to importing existing resources
+      existingInstanceId: 'i-0c08aa9595ec60099', // Use existing instance
     });
 
     // Create ECR repository for Docker images
     const ecrModule = new EcrModule(this, 'EcrModule', {
       repositoryName: 'material-recognition-service',
-      importExisting: false,
+      importExisting: props.importExistingResources ?? true, // Default to importing existing resources
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       imageScanOnPush: true,
     });
@@ -70,6 +74,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       retentionDays: 365,
       corsOrigins: ['*'],
       enableAccessLogging: true,
+      importExisting: props.importExistingResources ?? true, // Default to importing existing resources
     });
 
     // Create DynamoDB table for image metadata
@@ -81,6 +86,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       minCapacity: 1,
       maxCapacity: 100,
       enableStreaming: false,
+      importExisting: props.importExistingResources ?? true, // Default to importing existing resources
     });
 
     // Create S3 bucket for MaskTerial models
@@ -99,6 +105,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
           ],
         },
       ],
+      importExisting: props.importExistingResources ?? true, // Default to importing existing resources
     });
 
     // Create MaskTerial service
@@ -200,6 +207,18 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'MaskTerialServiceURL', {
       value: `http://${maskterialModule.maskterialService.instancePublicIp}:5000`,
       description: 'URL of the MaskTerial service',
+    });
+
+    // Add deployment summary
+    new cdk.CfnOutput(this, 'DeploymentSummary', {
+      value: JSON.stringify({
+        s3Bucket: s3Module.isImported ? 'imported' : 'created',
+        dynamoDBTable: dynamoDBModule.isImported ? 'imported' : 'created',
+        ecrRepository: ecrModule.isImported ? 'imported' : 'created',
+        modelsS3Bucket: modelsS3Module.isImported ? 'imported' : 'created',
+        importExistingResources: props.importExistingResources ?? true,
+      }, null, 2),
+      description: 'Summary of created vs imported resources',
     });
   }
 }

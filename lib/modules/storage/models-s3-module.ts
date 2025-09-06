@@ -12,47 +12,58 @@ export interface ModelsS3ModuleProps {
   encryption?: s3.BucketEncryption;
   publicReadAccess?: boolean;
   blockPublicAccess?: s3.BlockPublicAccess;
+  importExisting?: boolean; // If true, import existing bucket instead of creating new one
 }
 
 export class ModelsS3Module extends Construct {
-  public readonly bucket: s3.Bucket;
+  public readonly bucket: s3.IBucket;
   public readonly accessPolicy: iam.ManagedPolicy;
+  public readonly isImported: boolean;
 
   constructor(scope: Construct, id: string, props: ModelsS3ModuleProps = {}) {
     super(scope, id);
 
     const bucketName = props.bucketName || 'matsight-maskterial-models';
 
-    // Create S3 bucket for MaskTerial models
-    this.bucket = new s3.Bucket(this, 'ModelsBucket', {
-      bucketName,
-      versioned: props.versioned ?? true,
-      encryption: props.encryption ?? s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: props.blockPublicAccess ?? s3.BlockPublicAccess.BLOCK_ALL,
-      publicReadAccess: props.publicReadAccess ?? false,
-      cors: props.corsRules ?? [
-        {
-          allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
-          allowedOrigins: ['*'],
-          allowedHeaders: ['*'],
-          maxAge: 3000,
-        },
-      ],
-      lifecycleRules: props.lifecycleRules ?? [
-        {
-          id: 'DeleteOldVersions',
-          noncurrentVersionExpiration: cdk.Duration.days(30),
-          noncurrentVersionTransitions: [
-            {
-              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
-              transitionAfter: cdk.Duration.days(7),
-            },
-          ],
-        },
-      ],
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      autoDeleteObjects: false,
-    });
+    if (props.importExisting) {
+      // Import existing bucket
+      this.bucket = s3.Bucket.fromBucketName(this, 'ImportedModelsBucket', bucketName);
+      this.isImported = true;
+      console.log(`Importing existing Models S3 bucket: ${bucketName}`);
+    } else {
+      // Create new bucket
+      this.bucket = new s3.Bucket(this, 'ModelsBucket', {
+        bucketName,
+        versioned: props.versioned ?? true,
+        encryption: props.encryption ?? s3.BucketEncryption.S3_MANAGED,
+        blockPublicAccess: props.blockPublicAccess ?? s3.BlockPublicAccess.BLOCK_ALL,
+        publicReadAccess: props.publicReadAccess ?? false,
+        cors: props.corsRules ?? [
+          {
+            allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+            allowedOrigins: ['*'],
+            allowedHeaders: ['*'],
+            maxAge: 3000,
+          },
+        ],
+        lifecycleRules: props.lifecycleRules ?? [
+          {
+            id: 'DeleteOldVersions',
+            noncurrentVersionExpiration: cdk.Duration.days(30),
+            noncurrentVersionTransitions: [
+              {
+                storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+                transitionAfter: cdk.Duration.days(7),
+              },
+            ],
+          },
+        ],
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        autoDeleteObjects: false,
+      });
+      this.isImported = false;
+      console.log(`Creating new Models S3 bucket: ${bucketName}`);
+    }
 
     // Create IAM policy for EC2 instances to access the models bucket
     this.accessPolicy = new iam.ManagedPolicy(this, 'ModelsBucketAccessPolicy', {

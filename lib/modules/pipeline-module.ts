@@ -143,6 +143,13 @@ export class PipelineModule extends Construct {
     this.buildProject.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'ecr:GetAuthorizationToken',
+        'ecr:BatchCheckLayerAvailability',
+        'ecr:GetDownloadUrlForLayer',
+        'ecr:BatchGetImage',
+        'ecr:InitiateLayerUpload',
+        'ecr:UploadLayerPart',
+        'ecr:CompleteLayerUpload',
+        'ecr:PutImage',
         'sts:GetCallerIdentity',
       ],
       resources: ['*'],
@@ -157,7 +164,7 @@ export class PipelineModule extends Construct {
         privileged: false,
       },
       environmentVariables: {
-        INSTANCE_ID: { value: props.deploymentInstance.instanceId },
+        INSTANCE_ID: { value: 'i-01be861a184a42f5b' }, // Use new deployment instance ID
         ECR_REPO_URI: { value: this.ecrRepository.repositoryUri },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
@@ -195,6 +202,10 @@ export class PipelineModule extends Construct {
         'ssm:GetCommandInvocation',
         'ec2:DescribeInstances',
         'ecr:GetAuthorizationToken',
+        'ecr:BatchCheckLayerAvailability',
+        'ecr:GetDownloadUrlForLayer',
+        'ecr:BatchGetImage',
+        'sts:GetCallerIdentity',
       ],
       resources: ['*'],
     }));
