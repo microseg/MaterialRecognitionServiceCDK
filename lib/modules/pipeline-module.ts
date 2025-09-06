@@ -164,7 +164,8 @@ export class PipelineModule extends Construct {
         privileged: false,
       },
       environmentVariables: {
-        INSTANCE_ID: { value: 'i-01be861a184a42f5b' }, // Use new deployment instance ID
+        INSTANCE_TAG_NAME: { value: 'Name' },
+        INSTANCE_TAG_VALUE: { value: 'MaterialRecognitionServiceInstance' },
         ECR_REPO_URI: { value: this.ecrRepository.repositoryUri },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
@@ -174,7 +175,10 @@ export class PipelineModule extends Construct {
             commands: [
               'IMAGE_URI="$ECR_REPO_URI:latest"',
               'echo Using image $IMAGE_URI',
-              'echo "Sending SSM commands to instance $INSTANCE_ID"',
+              'echo "Finding instance with tag $INSTANCE_TAG_NAME=$INSTANCE_TAG_VALUE"',
+              'INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:$INSTANCE_TAG_NAME,Values=$INSTANCE_TAG_VALUE" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text)',
+              'echo "Found instance ID: $INSTANCE_ID"',
+              'if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then echo "No running instance found with tag $INSTANCE_TAG_NAME=$INSTANCE_TAG_VALUE"; exit 1; fi',
               // Three atomic steps for stability
               // 1) Install and start Docker
               'cat >/tmp/ssm-step1.json <<EOF\n{\n  "DocumentName": "AWS-RunShellScript",\n  "Parameters": {\n    "commands": [\n      "sudo yum update -y || true",\n      "sudo yum install -y docker || true",\n      "sudo systemctl enable --now docker || true"\n    ]\n  },\n  "TimeoutSeconds": 900\n}\nEOF',

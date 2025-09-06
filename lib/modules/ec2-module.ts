@@ -166,7 +166,7 @@ export class EC2Module extends Construct {
       machineImage: new ec2.AmazonLinuxImage({
         generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2,
       }),
-      // keyName: props.keyName, // Removed to avoid key pair dependency
+      keyName: 'MatsightDevKey', // Add SSH key for debugging
       role: this.instanceRole,
       securityGroup: deploymentSecurityGroup,
       userData: userData,
