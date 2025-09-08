@@ -16,43 +16,46 @@ export class AlbModule extends Construct {
   constructor(scope: Construct, id: string, props: AlbModuleProps) {
     super(scope, id);
 
-    // Create Application Load Balancer
     this.loadBalancer = new elbv2.ApplicationLoadBalancer(this, 'MaterialRecognitionALB', {
       vpc: props.vpc,
       internetFacing: true,
-      loadBalancerName: 'material-recognition-alb',
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      http2Enabled: true,
     });
 
-    // Create target group
-    this.targetGroup = new elbv2.ApplicationTargetGroup(this, 'MaterialRecognitionTargetGroup', {
+    this.targetGroup = new elbv2.ApplicationTargetGroup(this, 'MaterialRecognitionTG', {
       vpc: props.vpc,
-      port: 5000,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      targetType: elbv2.TargetType.INSTANCE,
+      targetType: elbv2.TargetType.INSTANCE,          
+      protocol: elbv2.ApplicationProtocol.HTTP,       
+      port: 5000,                                     
       healthCheck: {
-        path: '/health',
-        port: '5000',
-        protocol: elbv2.Protocol.HTTP,
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 3,
+        path: '/health',                              
+        healthyHttpCodes: '200',
+        interval: cdk.Duration.seconds(20),
         timeout: cdk.Duration.seconds(5),
-        interval: cdk.Duration.seconds(30),
+        unhealthyThresholdCount: 2,
+        healthyThresholdCount: 2,
       },
+      deregistrationDelay: cdk.Duration.seconds(10),
     });
 
-    // Add EC2 instance to target group
-    this.targetGroup.addTarget(new targets.InstanceTarget(props.ec2Instance));
+    this.targetGroup.addTarget(new targets.InstanceTarget(props.ec2Instance, 5000));
 
-    // Create listener
     const listener = this.loadBalancer.addListener('MaterialRecognitionListener', {
       port: 80,
       protocol: elbv2.ApplicationProtocol.HTTP,
       defaultAction: elbv2.ListenerAction.forward([this.targetGroup]),
+      open: true,
     });
 
-    // Tag the ALB
+    props.ec2Instance.connections.allowFrom(
+      this.loadBalancer,
+      ec2.Port.tcp(5000),
+      'Allow ALB to reach app on 5000'
+    );
+
+    new cdk.CfnOutput(this, 'AlbDnsName', { value: this.loadBalancer.loadBalancerDnsName });
     cdk.Tags.of(this.loadBalancer).add('Project', 'MaterialRecognitionService');
     cdk.Tags.of(this.loadBalancer).add('Environment', 'Development');
-    cdk.Tags.of(this.loadBalancer).add('Purpose', 'Load Balancer');
   }
 }
