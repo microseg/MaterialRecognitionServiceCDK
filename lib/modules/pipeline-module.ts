@@ -94,6 +94,7 @@ export class PipelineModule extends Construct {
       },
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
+        env: { shell: 'bash' },
         phases: {
           pre_build: {
             commands: [
@@ -111,7 +112,8 @@ export class PipelineModule extends Construct {
               'ls -la',
               'echo "Searching for Dockerfile..."',
               'find . -maxdepth 4 -name Dockerfile -print || true',
-              'DOCKERFILE_PATH=$(find . -maxdepth 4 -path "*/MaterialRecognitionService/MaterialRecognitionService/Dockerfile" | head -n1)',
+              'DOCKERFILE_PATH=$(find . -maxdepth 4 -path "*/MaterialRecognitionService/MaterialRecognitionService/Dockerfile.cpu" | head -n1)',
+              'if [ -z "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 2 -name Dockerfile.cpu | head -n1); fi',
               'if [ -z "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 2 -name Dockerfile | head -n1); fi',
               'echo "Using DOCKERFILE_PATH=$DOCKERFILE_PATH"',
               'if [ -z "$DOCKERFILE_PATH" ] || [ ! -f "$DOCKERFILE_PATH" ]; then echo "Dockerfile not found"; exit 1; fi',
@@ -125,14 +127,15 @@ export class PipelineModule extends Construct {
           post_build: {
             commands: [
               'docker push $ECR_REPO_URI:$IMAGE_TAG',
-              'echo "Tagging and pushing latest"',
-              'docker tag $ECR_REPO_URI:$IMAGE_TAG $ECR_REPO_URI:latest',
+              'docker tag  $ECR_REPO_URI:$IMAGE_TAG $ECR_REPO_URI:latest',
               'docker push $ECR_REPO_URI:latest',
+              'printf \'{"imageTag":"%s"}\' "$IMAGE_TAG" > imageDetail.json',
+              'echo "imageDetail.json:" && cat imageDetail.json',
             ],
           },
         },
         artifacts: {
-          files: ['**/*'],
+          files: ['imageDetail.json'],
         },
       }),
     });
@@ -142,10 +145,73 @@ export class PipelineModule extends Construct {
     this.buildProject.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'ecr:GetAuthorizationToken',
+        'ecr:BatchCheckLayerAvailability',
+        'ecr:GetDownloadUrlForLayer',
+        'ecr:BatchGetImage',
+        'ecr:InitiateLayerUpload',
+        'ecr:UploadLayerPart',
+        'ecr:CompleteLayerUpload',
+        'ecr:PutImage',
         'sts:GetCallerIdentity',
       ],
       resources: ['*'],
     }));
+
+    // Generate SSM deployment JSON configuration
+    // const writeDeployJson = [
+    //   'cat >/tmp/deploy.json <<EOF',
+    //   '{',
+    //   ' "DocumentName": "AWS-RunShellScript",',
+    //   ' "Parameters": {',
+    //   ' "commands": [',
+    //   ' "set -euo pipefail",',
+    //   ' "sudo systemctl enable --now amazon-ssm-agent || true",',
+    //   ' "sudo systemctl enable --now docker || true",',
+    //   ' "ACCOUNT_REGISTRY=$(echo $ECR_REPO_URI | cut -d/ -f1)",',
+    //   ' "aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ACCOUNT_REGISTRY",',
+    //   ' "docker pull $ECR_REPO_URI:latest",',
+    //   ' "test -f /etc/systemd/system/matsight.service || (echo \'matsight.service missing\' >&2; exit 2)"',
+    //   ' "sudo systemctl stop matsight || true",',
+    //   ' "sudo sed -i s#${this.ecrRepository.repositoryUri}:[^ ]\\+#$FULL_IMAGE#g /etc/systemd/system/matsight.service",',
+    //   ' "sudo systemctl daemon-reload"',
+    //   ' "sudo systemctl restart matsight",',
+    //   ' "sleep 3",',
+    //   ' "curl -fsS http://127.0.0.1:5000/health || (journalctl -u matsight -n 100 --no-pager >&2; exit 1)"',
+    //   ' ]',
+    //   ' },',
+    //   ' "TimeoutSeconds": 1800,',
+    //   ' "CloudWatchOutputConfig": { "CloudWatchLogGroupName": "/matsight/deploy", "CloudWatchOutputEnabled": true }',
+    //   '}',
+    //   'EOF'
+    // ].join('\n');
+    const repoUri = this.ecrRepository.repositoryUri;
+    const writeDeployJson = `
+cat >/tmp/deploy.json <<EOF
+{
+ "DocumentName": "AWS-RunShellScript",
+ "Parameters": {
+  "commands": [
+   "set -euo pipefail",
+   "sudo systemctl enable --now amazon-ssm-agent || true",
+   "sudo systemctl enable --now docker || true",
+   "ACCOUNT_REGISTRY=$(echo $ECR_REPO_URI | cut -d/ -f1)",
+   "aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ACCOUNT_REGISTRY",
+   "docker pull $FULL_IMAGE",
+   "test -f /etc/systemd/system/matsight.service || (echo \\"matsight.service missing\\" >&2; exit 2)",
+   "sudo systemctl stop matsight || true",
+   "sudo sed -E -i s#${repoUri}:[^ ]+#$FULL_IMAGE#g /etc/systemd/system/matsight.service",
+   "sudo systemctl daemon-reload",
+   "sudo systemctl restart matsight",
+   "sleep 3",
+   "curl -fsS http://127.0.0.1:5000/health || (journalctl -u matsight -n 100 --no-pager >&2; exit 1)"
+  ]
+ },
+ "TimeoutSeconds": 1800,
+ "CloudWatchOutputConfig": { "CloudWatchOutputEnabled": true, "CloudWatchLogGroupName": "/matsight/deploy" }
+}
+EOF
+`;
+
 
     // Deploy project: use SSM to pull and run the container on EC2 (no scripts generated)
     this.deployProject = new codebuild.PipelineProject(this, 'MaterialRecognitionDeployProject', {
@@ -156,34 +222,40 @@ export class PipelineModule extends Construct {
         privileged: false,
       },
       environmentVariables: {
-        INSTANCE_ID: { value: props.deploymentInstance.instanceId },
-        ECR_REPO_URI: { value: this.ecrRepository.repositoryUri },
+        SSM_TARGET_TAG:   { value: 'SSMTarget' },
+        SSM_TARGET_VALUE: { value: 'MaterialRecognitionService' },
+        ECR_REPO_URI:     { value: this.ecrRepository.repositoryUri },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
+        env: { shell: 'bash' },
         phases: {
           build: {
             commands: [
-              'IMAGE_URI="$ECR_REPO_URI:latest"',
-              'echo Using image $IMAGE_URI',
-              'echo "Sending SSM commands to instance $INSTANCE_ID"',
-              // Three atomic steps for stability
-              // 1) Install and start Docker
-              'cat >/tmp/ssm-step1.json <<EOF\n{\n  "DocumentName": "AWS-RunShellScript",\n  "Parameters": {\n    "commands": [\n      "sudo yum update -y || true",\n      "sudo yum install -y docker || true",\n      "sudo systemctl enable --now docker || true"\n    ]\n  },\n  "TimeoutSeconds": 900\n}\nEOF',
-              'aws ssm send-command --instance-ids $INSTANCE_ID --cli-input-json file:///tmp/ssm-step1.json --query "Command.CommandId" --output text > cmd1.txt',
-              'for i in $(seq 1 60); do STATUS=$(aws ssm get-command-invocation --command-id "$(cat cmd1.txt)" --instance-id "$INSTANCE_ID" --query Status --output text); echo $STATUS; if [ "$STATUS" = "Success" ]; then break; elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then aws ssm get-command-invocation --command-id "$(cat cmd1.txt)" --instance-id "$INSTANCE_ID" --query StandardErrorContent --output text; exit 1; fi; sleep 5; done',
-              // 2) Login to ECR (using AWS_DEFAULT_REGION)
-              'cat >/tmp/ssm-step2.json <<EOF\n{\n  "DocumentName": "AWS-RunShellScript",\n  "Parameters": {\n    "commands": [\n      "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)",\n      "aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"\n    ]\n  },\n  "TimeoutSeconds": 900\n}\nEOF',
-              'aws ssm send-command --instance-ids $INSTANCE_ID --cli-input-json file:///tmp/ssm-step2.json --query "Command.CommandId" --output text > cmd2.txt',
-              'for i in $(seq 1 60); do STATUS=$(aws ssm get-command-invocation --command-id "$(cat cmd2.txt)" --instance-id "$INSTANCE_ID" --query Status --output text); echo $STATUS; if [ "$STATUS" = "Success" ]; then break; elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then aws ssm get-command-invocation --command-id "$(cat cmd2.txt)" --instance-id "$INSTANCE_ID" --query StandardErrorContent --output text; exit 1; fi; sleep 5; done',
-              // 3) Pull and run container (clear port 5000 if occupied)
-              'cat >/tmp/ssm-step3.json <<EOF\n{\n  "DocumentName": "AWS-RunShellScript",\n  "Parameters": {\n    "commands": [\n      "systemctl stop material-recognition.service || true",\n      "systemctl disable material-recognition.service || true",\n      "pkill -f gunicorn || true",\n      "docker ps -q --filter publish=5000 | xargs -r docker rm -f || true",\n      "fuser -k 5000/tcp || true",\n      "sleep 1",\n      "docker rm -f material-recognition || true",\n      "docker pull $IMAGE_URI",\n      "docker container run -d --name material-recognition --publish 5000:5000 --restart always $IMAGE_URI"\n    ]\n  },\n  "TimeoutSeconds": 900\n}\nEOF',
-              'aws ssm send-command --instance-ids $INSTANCE_ID --cli-input-json file:///tmp/ssm-step3.json --query "Command.CommandId" --output text > cmd3.txt',
-              'for i in $(seq 1 60); do STATUS=$(aws ssm get-command-invocation --command-id "$(cat cmd3.txt)" --instance-id "$INSTANCE_ID" --query Status --output text); echo $STATUS; if [ "$STATUS" = "Success" ]; then exit 0; elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then aws ssm get-command-invocation --command-id "$(cat cmd3.txt)" --instance-id "$INSTANCE_ID" --query StandardErrorContent --output text; exit 1; fi; sleep 5; done; exit 1',
+              'set -euo pipefail',
+
+              'IMAGE_TAG=$(jq -r .imageTag imageDetail.json 2>/dev/null || python3 -c \'import json;print(json.load(open("imageDetail.json"))["imageTag"])\' 2>/dev/null || echo latest)',
+              'FULL_IMAGE="$ECR_REPO_URI:$IMAGE_TAG"',
+              'echo "Deploying $FULL_IMAGE to $SSM_TARGET_TAG=$SSM_TARGET_VALUE"',
+              writeDeployJson,
+              'CMD_ID=$(aws ssm send-command --targets "Key=tag:$SSM_TARGET_TAG,Values=$SSM_TARGET_VALUE" --cli-input-json file:///tmp/deploy.json --query "Command.CommandId" --output text)',
+              'echo "SSM CommandId: $CMD_ID"',
+              'for i in $(seq 1 120); do ' +
+                'STATUSES=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details --query "commandInvocations[].Status" --output text | tr "\\n" " "); ' +
+                'echo "[$i/120] $STATUSES"; ' +
+                'if [ -n "$STATUSES" ] && ! echo "$STATUSES" | grep -qE "(InProgress|Pending|Delayed)"; then ' +
+                  'if echo "$STATUSES" | grep -q "Failed"; then ' +
+                    'aws ssm list-command-invocations --command-id "$CMD_ID" --details --query "commandInvocations[].CommandPlugins[].{Status:Status,StdOut:Output,StdErr:StandardErrorUrl}" --output table || true; ' +
+                    'exit 1; ' +
+                  'fi; ' +
+                  'break; ' +
+                'fi; ' +
+                'sleep 5; ' +
+              'done',
             ],
           },
         },
-        artifacts: { files: ['**/*'] },
+        artifacts: { files: ['imageDetail.json'] },
       }),
     });
 
@@ -192,11 +264,20 @@ export class PipelineModule extends Construct {
       actions: [
         'ssm:SendCommand',
         'ssm:GetCommandInvocation',
+        'ssm:ListCommandInvocations',
         'ec2:DescribeInstances',
         'ecr:GetAuthorizationToken',
+        'ecr:BatchCheckLayerAvailability',
+        'ecr:GetDownloadUrlForLayer',
+        'ecr:BatchGetImage',
+        'sts:GetCallerIdentity',
       ],
       resources: ['*'],
     }));
+
+
+    const sourceOutput = new codepipeline.Artifact('SourceCode');
+    const buildOutput  = new codepipeline.Artifact('BuildOutput');
 
     // Create the pipeline
     this.pipeline = new codepipeline.Pipeline(this, 'MaterialRecognitionPipeline', {
@@ -213,7 +294,7 @@ export class PipelineModule extends Construct {
               repo: props.githubRepo,
               branch: props.githubBranch,
               oauthToken: cdk.SecretValue.secretsManager('github-token'),
-              output: new codepipeline.Artifact('SourceCode'),
+              output: sourceOutput,
               variablesNamespace: 'SourceVariables',
             }),
           ],
@@ -224,8 +305,8 @@ export class PipelineModule extends Construct {
             new codepipeline_actions.CodeBuildAction({
               actionName: 'BuildImage',
               project: this.buildProject,
-              input: new codepipeline.Artifact('SourceCode'),
-              outputs: [new codepipeline.Artifact('ImageOutput')],
+              input: sourceOutput,
+              outputs: [buildOutput],
             }),
           ],
         },
@@ -235,7 +316,7 @@ export class PipelineModule extends Construct {
             new codepipeline_actions.CodeBuildAction({
               actionName: 'DeployToEC2',
               project: this.deployProject,
-              input: new codepipeline.Artifact('SourceCode'), // not used, for pipeline constraint
+              input: buildOutput,
             }),
           ],
         },
