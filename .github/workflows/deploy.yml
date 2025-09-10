@@ -1,0 +1,49 @@
+name: CDK Deploy (deploy-test)
+
+on:
+  push:
+    branches: [ "deploy-test" ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read    # required to checkout
+
+env:
+  AWS_ACCOUNT_ID: ${{ secrets.630888660487 }}
+  AWS_REGION: ${{ secrets.us-east-1 }}
+  CDK_NEW_BOOTSTRAP: "1"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws:iam::630888660487:oidc-provider/token.actions.githubusercontent.com }}
+          aws-region: ${{ env.us-east-1 }}
+          audience: sts.amazonaws.com
+
+      # First-time only: bootstrap the environment (safe to run repeatedly)
+      - name: CDK Bootstrap
+        run: npx cdk bootstrap aws://$630888660487/$us-east-1
+
+      - name: Synthesize
+        run: npx cdk synth
+
+      - name: Deploy
+        run: npx cdk deploy --all --require-approval never
