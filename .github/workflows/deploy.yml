@@ -10,8 +10,8 @@ permissions:
   contents: read    # required to checkout
 
 env:
-  AWS_ACCOUNT_ID: ${{ secrets.630888660487 }}
-  AWS_REGION: ${{ secrets.us-east-1 }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
   CDK_NEW_BOOTSTRAP: "1"
 
 jobs:
@@ -34,13 +34,13 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.aws:iam::630888660487:oidc-provider/token.actions.githubusercontent.com }}
-          aws-region: ${{ env.us-east-1 }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
       # First-time only: bootstrap the environment (safe to run repeatedly)
       - name: CDK Bootstrap
-        run: npx cdk bootstrap aws://$630888660487/$us-east-1
+        run: npx cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_REGION
 
       - name: Synthesize
         run: npx cdk synth
