@@ -91,7 +91,7 @@ export class MaskTerialModule extends Construct {
       resources: ['*'],
     }));
 
-    const defaultCpuType = new ec2.InstanceType('t3.medium')
+    const defaultCpuType = new ec2.InstanceType('t3.micro')
     const defaultGpuType = new ec2.InstanceType('g4dn.xlarge')
     // Create EC2 instance for MaskTerial service
     const instanceType = props.enableGPU 
