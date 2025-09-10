@@ -159,7 +159,6 @@ export class PipelineModule extends Construct {
 
     const account = cdk.Stack.of(this).account;
     const region = cdk.Stack.of(this).region;
-    const ec2InstanceId = props.deploymentInstance.instanceId;
 
     this.deployProject = new codebuild.PipelineProject(this, 'Production_Deploy', {
       projectName: 'MaterialRecognitionProductionDeploy',
@@ -167,8 +166,8 @@ export class PipelineModule extends Construct {
         buildImage: codebuild.LinuxBuildImage.STANDARD_5_0,
       },
       environmentVariables: {
-        Environment_TAG:   { value: 'Environment' },
-        Environment_VALUE: { value: 'Production' },
+        ENVIRONMENT:  { value: "Production" },
+        SSM_TARGET:   { value: "MaterialRecognitionService" },
         ECR_REPO_URI:     { value: this.ecrRepository.repositoryUri },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
@@ -177,16 +176,22 @@ export class PipelineModule extends Construct {
           build: {
             commands: [
               `aws ssm send-command \
-                --targets "Key=instanceIds,Values=${ec2InstanceId}" \
-                          "Key=tag:Environment_TAG,Values=$Environment_VALUE" \
+                --targets "Key=tag:SSMTarget,Values=$SSM_TARGET" \
+                          "Key=tag:Environment,Values=$ENVIRONMENT" \
                 --document-name "AWS-RunShellScript" \
                 --comment "Deploy latest container" \
                 --parameters 'commands=[
-                  "aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
-                  "docker pull ${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service:latest",
-                  "docker stop material-recognition || true",
-                  "docker rm material-recognition || true",
-                  "docker run -d -p 5000:5000 --name material-recognition ${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service:latest"
+                  "set -euo pipefail",
+                  "ACCOUNT=${account}",
+                  "REGION=${region}",
+                  "REPO=${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service",
+                  "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
+                  "docker pull $REPO:latest",
+                  "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
+                  "docker rm -f material-recognition || true",
+                  "docker run -d --restart unless-stopped -p 127.0.0.1:5000:5000 --name material-recognition $REPO:latest",
+                  "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/simple-test && exit 0; echo waiting...; sleep 2; done",
+                  "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
                 ]'`
             ],
           },
