@@ -11,7 +11,7 @@ permissions:
 
 env:
   AWS_REGION: us-west-1       # <-- CHANGE to your target region (e.g., us-west-2)
-  CDK_STACKS: MaterialRecognitionServiceCdkStack   # <-- CHANGE after running `npx cdk ls`
+  CDK_STACKS: MaterialRecognitionServiceStack   # <-- CHANGE after running `npx cdk ls`
 
 jobs:
   deploy:
