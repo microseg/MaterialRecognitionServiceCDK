@@ -157,105 +157,40 @@ export class PipelineModule extends Construct {
       resources: ['*'],
     }));
 
-    // Generate SSM deployment JSON configuration
-    // const writeDeployJson = [
-    //   'cat >/tmp/deploy.json <<EOF',
-    //   '{',
-    //   ' "DocumentName": "AWS-RunShellScript",',
-    //   ' "Parameters": {',
-    //   ' "commands": [',
-    //   ' "set -euo pipefail",',
-    //   ' "sudo systemctl enable --now amazon-ssm-agent || true",',
-    //   ' "sudo systemctl enable --now docker || true",',
-    //   ' "ACCOUNT_REGISTRY=$(echo $ECR_REPO_URI | cut -d/ -f1)",',
-    //   ' "aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ACCOUNT_REGISTRY",',
-    //   ' "docker pull $ECR_REPO_URI:latest",',
-    //   ' "test -f /etc/systemd/system/matsight.service || (echo \'matsight.service missing\' >&2; exit 2)"',
-    //   ' "sudo systemctl stop matsight || true",',
-    //   ' "sudo sed -i s#${this.ecrRepository.repositoryUri}:[^ ]\\+#$FULL_IMAGE#g /etc/systemd/system/matsight.service",',
-    //   ' "sudo systemctl daemon-reload"',
-    //   ' "sudo systemctl restart matsight",',
-    //   ' "sleep 3",',
-    //   ' "curl -fsS http://127.0.0.1:5000/health || (journalctl -u matsight -n 100 --no-pager >&2; exit 1)"',
-    //   ' ]',
-    //   ' },',
-    //   ' "TimeoutSeconds": 1800,',
-    //   ' "CloudWatchOutputConfig": { "CloudWatchLogGroupName": "/matsight/deploy", "CloudWatchOutputEnabled": true }',
-    //   '}',
-    //   'EOF'
-    // ].join('\n');
-    const repoUri = this.ecrRepository.repositoryUri;
-    const writeDeployJson = `
-cat >/tmp/deploy.json <<EOF
-{
- "DocumentName": "AWS-RunShellScript",
- "Parameters": {
-  "commands": [
-   "set -euo pipefail",
-   "sudo systemctl enable --now amazon-ssm-agent || true",
-   "sudo systemctl enable --now docker || true",
-   "ACCOUNT_REGISTRY=$(echo $ECR_REPO_URI | cut -d/ -f1)",
-   "aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ACCOUNT_REGISTRY",
-   "docker pull $FULL_IMAGE",
-   "test -f /etc/systemd/system/matsight.service || (echo \\"matsight.service missing\\" >&2; exit 2)",
-   "sudo systemctl stop matsight || true",
-   "sudo sed -E -i s#${repoUri}:[^ ]+#$FULL_IMAGE#g /etc/systemd/system/matsight.service",
-   "sudo systemctl daemon-reload",
-   "sudo systemctl restart matsight",
-   "sleep 3",
-   "curl -fsS http://127.0.0.1:5000/health || (journalctl -u matsight -n 100 --no-pager >&2; exit 1)"
-  ]
- },
- "TimeoutSeconds": 1800,
- "CloudWatchOutputConfig": { "CloudWatchOutputEnabled": true, "CloudWatchLogGroupName": "/matsight/deploy" }
-}
-EOF
-`;
+    const account = cdk.Stack.of(this).account;
+    const region = cdk.Stack.of(this).region;
+    const ec2InstanceId = props.deploymentInstance.instanceId;
 
-
-    // Deploy project: use SSM to pull and run the container on EC2 (no scripts generated)
-    this.deployProject = new codebuild.PipelineProject(this, 'MaterialRecognitionDeployProject', {
-      projectName: 'MaterialRecognitionDeployProject',
+    this.deployProject = new codebuild.PipelineProject(this, 'Production_Deploy', {
+      projectName: 'MaterialRecognitionProductionDeploy',
       environment: {
-        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-        computeType: codebuild.ComputeType.SMALL,
-        privileged: false,
+        buildImage: codebuild.LinuxBuildImage.STANDARD_5_0,
       },
       environmentVariables: {
-        SSM_TARGET_TAG:   { value: 'SSMTarget' },
-        SSM_TARGET_VALUE: { value: 'MaterialRecognitionService' },
+        Environment_TAG:   { value: 'Environment' },
+        Environment_VALUE: { value: 'Production' },
         ECR_REPO_URI:     { value: this.ecrRepository.repositoryUri },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
-        env: { shell: 'bash' },
         phases: {
           build: {
             commands: [
-              'set -euo pipefail',
-
-              'IMAGE_TAG=$(jq -r .imageTag imageDetail.json 2>/dev/null || python3 -c \'import json;print(json.load(open("imageDetail.json"))["imageTag"])\' 2>/dev/null || echo latest)',
-              'FULL_IMAGE="$ECR_REPO_URI:$IMAGE_TAG"',
-              'echo "Deploying $FULL_IMAGE to $SSM_TARGET_TAG=$SSM_TARGET_VALUE"',
-              writeDeployJson,
-              'CMD_ID=$(aws ssm send-command --targets "Key=tag:$SSM_TARGET_TAG,Values=$SSM_TARGET_VALUE" --cli-input-json file:///tmp/deploy.json --query "Command.CommandId" --output text)',
-              'echo "SSM CommandId: $CMD_ID"',
-              'for i in $(seq 1 120); do ' +
-                'STATUSES=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details --query "commandInvocations[].Status" --output text | tr "\\n" " "); ' +
-                'echo "[$i/120] $STATUSES"; ' +
-                'if [ -n "$STATUSES" ] && ! echo "$STATUSES" | grep -qE "(InProgress|Pending|Delayed)"; then ' +
-                  'if echo "$STATUSES" | grep -q "Failed"; then ' +
-                    'aws ssm list-command-invocations --command-id "$CMD_ID" --details --query "commandInvocations[].CommandPlugins[].{Status:Status,StdOut:Output,StdErr:StandardErrorUrl}" --output table || true; ' +
-                    'exit 1; ' +
-                  'fi; ' +
-                  'break; ' +
-                'fi; ' +
-                'sleep 5; ' +
-              'done',
+              `aws ssm send-command \
+                --targets "Key=instanceIds,Values=${ec2InstanceId}" \
+                          "Key=tag:Environment_TAG,Values=$Environment_VALUE" \
+                --document-name "AWS-RunShellScript" \
+                --comment "Deploy latest container" \
+                --parameters 'commands=[
+                  "aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
+                  "docker pull ${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service:latest",
+                  "docker stop material-recognition || true",
+                  "docker rm material-recognition || true",
+                  "docker run -d -p 5000:5000 --name material-recognition ${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service:latest"
+                ]'`
             ],
           },
         },
-        artifacts: { files: ['imageDetail.json'] },
       }),
     });
 
@@ -311,10 +246,10 @@ EOF
           ],
         },
         {
-          stageName: 'Deploy',
+          stageName: 'Production',
           actions: [
             new codepipeline_actions.CodeBuildAction({
-              actionName: 'DeployToEC2',
+              actionName: 'Production_Deploy',
               project: this.deployProject,
               input: buildOutput,
             }),
@@ -325,6 +260,5 @@ EOF
 
     // Tag the pipeline
     cdk.Tags.of(this.pipeline).add('Project', 'MaterialRecognitionService');
-    cdk.Tags.of(this.pipeline).add('Environment', 'Development');
   }
 }

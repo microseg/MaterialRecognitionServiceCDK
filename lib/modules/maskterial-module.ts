@@ -76,14 +76,27 @@ export class MaskTerialModule extends Construct {
         'logs:CreateLogStream',
         'logs:PutLogEvents',
         'logs:DescribeLogStreams',
+        "s3:ListBucket",
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "dynamodb:PutItem",
+        "dynamodb:GetItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:DescribeTable"
       ],
       resources: ['*'],
     }));
 
+    const defaultCpuType = new ec2.InstanceType('t3.medium')
+    const defaultGpuType = new ec2.InstanceType('g4dn.xlarge')
     // Create EC2 instance for MaskTerial service
     const instanceType = props.enableGPU 
-      ? ec2.InstanceType.of(ec2.InstanceClass.G4DN, ec2.InstanceSize.XLARGE)
-      : ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.LARGE);
+      ? (props.instanceType ? new ec2.InstanceType(props.instanceType) : defaultGpuType)
+      : (props.instanceType ? new ec2.InstanceType(props.instanceType) : defaultCpuType);
 
     this.maskterialService = new ec2.Instance(this, 'MaskTerialInstance', {
       vpc: props.vpc,
@@ -112,6 +125,7 @@ export class MaskTerialModule extends Construct {
     // Add tags for identification
     cdk.Tags.of(this.maskterialService).add('Service', 'MaskTerial');
     cdk.Tags.of(this.maskterialService).add('Environment', 'Production');
+    cdk.Tags.of(this.maskterialService).add('SSMTarget', 'MaterialRecognitionService');
 
     // Output important information
     new cdk.CfnOutput(this, 'MaskTerialInstanceId', {
