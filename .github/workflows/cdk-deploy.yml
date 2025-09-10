@@ -1,30 +1,44 @@
 name: CDK Deploy (OIDC)
 
 on:
-  push:
-    branches: [ deploy-test ]
-  workflow_dispatch:               # allow manual runs from the Actions tab.
+  # Manual runs from the Actions tab (shows a branch selector)
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (branch or tag) to deploy"
+        required: false
+        default: "deploy-test"
 
 permissions:
-  id-token: write                  # required for GitHub OIDC
+  id-token: write        # required for GitHub OIDC
   contents: read
+
+# Prevent overlapping deploys
+concurrency: deploy-materialrecognitionservice
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     env:
+      # Set these repo secrets:
+      #   AWS_ACCOUNT_ID = 630888660487
+      #   AWS_REGION     = us-east-1
+      #   AWS_ROLE_ARN   = arn:aws:iam::630888660487:role/GithubActions-CDK-Deploy
       CDK_DEFAULT_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
       CDK_DEFAULT_REGION:  ${{ secrets.AWS_REGION }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Allow choosing which branch/tag to deploy at run time
+          ref: ${{ github.event.inputs.ref }}
 
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: "18"
 
       - name: Cache npm
         uses: actions/cache@v4
@@ -47,12 +61,29 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
           role-session-name: github-actions-cdk
 
-      # First time only: bootstrap is idempotent; safe to run every time
-      - name: CDK bootstrap
-        run: npx cdk bootstrap aws://$CDK_DEFAULT_ACCOUNT/$CDK_DEFAULT_REGION
+      - name: Show CDK env
+        run: |
+          echo "Account=$CDK_DEFAULT_ACCOUNT"
+          echo "Region=$CDK_DEFAULT_REGION"
+          npx cdk --version
+
+      # Idempotent: creates/updates CDKToolkit and assets bucket in us-east-1
+      - name: CDK bootstrap (new-style)
+        env:
+          CDK_NEW_BOOTSTRAP: "1"
+        run: |
+          npx cdk bootstrap aws://$CDK_DEFAULT_ACCOUNT/$CDK_DEFAULT_REGION \
+            --qualifier hnb659fds \
+            --cloudformation-execution-policies arn:aws:iam::aws:policy/AdministratorAccess
+
+      - name: Sanity check: list assets bucket
+        run: |
+          ASSETS="cdk-hnb659fds-assets-$CDK_DEFAULT_ACCOUNT-$CDK_DEFAULT_REGION"
+          aws s3 ls "s3://$ASSETS" --region "$CDK_DEFAULT_REGION" || true
 
       - name: Synthesize
-        run: npx cdk synth
+        run: npx cdk synth --verbose
 
       - name: Deploy
-        run: npx cdk deploy --require-approval never --all
+        env:
+          CDK_DEBUG_
