@@ -117,7 +117,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     });
 
     // Create CI/CD pipeline
-    /*const pipelineModule = new PipelineModule(this, 'PipelineModule', {
+    const pipelineModule = new PipelineModule(this, 'PipelineModule', {
       githubTokenSecretArn: props.githubTokenSecretArn,
       githubOwner: props.githubOwner,
       githubRepo: props.githubRepo,
@@ -125,7 +125,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       deploymentInstance: maskterialModule.maskterialService,
       vpc: vpcModule.vpc,
       ecrRepository: ecrModule.repository,
-    });*/
+    });
 
     // Output important information
     new cdk.CfnOutput(this, 'VpcId', {
