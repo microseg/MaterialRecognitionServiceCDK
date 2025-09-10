@@ -1,7 +1,6 @@
 name: CDK Deploy (OIDC)
 
 on:
-  # Manual runs from the Actions tab (shows a branch selector)
   workflow_dispatch:
     inputs:
       ref:
@@ -10,21 +9,15 @@ on:
         default: "deploy-test"
 
 permissions:
-  id-token: write        # required for GitHub OIDC
+  id-token: write
   contents: read
 
-# Prevent overlapping deploys
 concurrency: deploy-materialrecognitionservice
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     env:
-      # Set these repo secrets:
-      #   AWS_ACCOUNT_ID = 630888660487
-      #   AWS_REGION     = us-east-1
-      #   AWS_ROLE_ARN   = arn:aws:iam::630888660487:role/GithubActions-CDK-Deploy
       CDK_DEFAULT_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
       CDK_DEFAULT_REGION:  ${{ secrets.AWS_REGION }}
 
@@ -32,7 +25,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Allow choosing which branch/tag to deploy at run time
           ref: ${{ github.event.inputs.ref }}
 
       - name: Use Node.js
@@ -66,8 +58,8 @@ jobs:
           echo "Account=$CDK_DEFAULT_ACCOUNT"
           echo "Region=$CDK_DEFAULT_REGION"
           npx cdk --version
+          aws --version
 
-      # Idempotent: creates/updates CDKToolkit and assets bucket in us-east-1
       - name: CDK bootstrap (new-style)
         env:
           CDK_NEW_BOOTSTRAP: "1"
@@ -76,14 +68,16 @@ jobs:
             --qualifier hnb659fds \
             --cloudformation-execution-policies arn:aws:iam::aws:policy/AdministratorAccess
 
-      - name: Sanity check: list assets bucket
+      - name: "Sanity check - list assets bucket"
+        env:
+          ASSETS_BUCKET: cdk-hnb659fds-assets-${{ secrets.AWS_ACCOUNT_ID }}-${{ secrets.AWS_REGION }}
         run: |
-          ASSETS="cdk-hnb659fds-assets-$CDK_DEFAULT_ACCOUNT-$CDK_DEFAULT_REGION"
-          aws s3 ls "s3://$ASSETS" --region "$CDK_DEFAULT_REGION" || true
+          aws s3 ls "s3://${ASSETS_BUCKET}" --region "${{ secrets.AWS_REGION }}" || true
 
       - name: Synthesize
         run: npx cdk synth --verbose
 
       - name: Deploy
         env:
-          CDK_DEBUG_
+          CDK_DEBUG: "true"
+        run: npx cdk deploy --require-approval never --all --verbose
