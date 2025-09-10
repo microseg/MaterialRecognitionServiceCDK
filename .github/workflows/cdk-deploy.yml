@@ -1,8 +1,6 @@
 name: CDK Deploy (OIDC)
 
 on:
-  push:
-    branches: [ deploy-test ]     # run on pushes to deploy-test
   workflow_dispatch:               # allow manual runs from the Actions tab
 
 permissions:
