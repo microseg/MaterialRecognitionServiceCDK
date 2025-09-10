@@ -3,7 +3,7 @@ name: CDK Deploy (OIDC)
 on:
   push:
     branches: [ deploy-test ]
-  workflow_dispatch:               # allow manual runs from the Actions tab
+  workflow_dispatch:               # allow manual runs from the Actions tab.
 
 permissions:
   id-token: write                  # required for GitHub OIDC
