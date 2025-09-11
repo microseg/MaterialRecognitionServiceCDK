@@ -9,6 +9,7 @@ export interface ApiGatewayModuleProps {
   vpc: ec2.IVpc;
   ec2Instance: ec2.Instance;
   targetHost: string; // EIP or domain name
+  environmentName?: string;
 }
 
 export class ApiGatewayModule extends Construct {
@@ -17,10 +18,14 @@ export class ApiGatewayModule extends Construct {
   constructor(scope: Construct, id: string, props: ApiGatewayModuleProps) {
     super(scope, id);
 
+    const envSuffix = props.environmentName ? `-${props.environmentName}` : '';
+    const envTag = props.environmentName || 'Production';
+    const stageName = props.environmentName ? props.environmentName.toLowerCase() : 'prod';
+
     // Create API Gateway
-    this.api = new apigateway.RestApi(this, 'MaterialRecognitionApi', {
-      restApiName: 'MaterialRecognitionPublicApi',
-      description: 'API Gateway for Material Recognition Service',
+    this.api = new apigateway.RestApi(this, `MaterialRecognitionApi${envSuffix}`, {
+      restApiName: `MaterialRecognitionPublicApi${envSuffix}`,
+      description: `API Gateway for Material Recognition Service${envSuffix}`,
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: apigateway.Cors.ALL_METHODS,
@@ -33,7 +38,7 @@ export class ApiGatewayModule extends Construct {
         ],
       },
       deployOptions: {
-        stageName: 'prod',
+        stageName: stageName,
         loggingLevel: apigateway.MethodLoggingLevel.OFF,
         dataTraceEnabled: false,
         metricsEnabled: false,
@@ -56,9 +61,9 @@ export class ApiGatewayModule extends Construct {
     );
     
     // Add usage plan for API management
-    const plan = this.api.addUsagePlan('MaterialRecognitionUsagePlan', {
-      name: 'MaterialRecognitionService',
-      description: 'Usage plan for Material Recognition Service',
+    const plan = this.api.addUsagePlan(`MaterialRecognitionUsagePlan${envSuffix}`, {
+      name: `MaterialRecognitionService${envSuffix}`,
+      description: `Usage plan for Material Recognition Service${envSuffix}`,
       throttle: {
         rateLimit: 100,
         burstLimit: 200,
@@ -75,7 +80,7 @@ export class ApiGatewayModule extends Construct {
 
     // Tag the API Gateway
     cdk.Tags.of(this.api).add('Project', 'MaterialRecognitionService');
-    cdk.Tags.of(this.api).add('Environment', 'Production');
+    cdk.Tags.of(this.api).add('Environment', envTag);
     cdk.Tags.of(this.api).add('Purpose', 'API Gateway');
   }
 }

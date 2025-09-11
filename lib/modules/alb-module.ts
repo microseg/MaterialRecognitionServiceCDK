@@ -7,6 +7,7 @@ import { Construct } from 'constructs';
 export interface AlbModuleProps {
   vpc: ec2.IVpc;
   ec2Instance: ec2.Instance;
+  environmentName?: string;
 }
 
 export class AlbModule extends Construct {
@@ -16,14 +17,17 @@ export class AlbModule extends Construct {
   constructor(scope: Construct, id: string, props: AlbModuleProps) {
     super(scope, id);
 
-    this.loadBalancer = new elbv2.ApplicationLoadBalancer(this, 'MaterialRecognitionALB', {
+    const envSuffix = props.environmentName ? `-${props.environmentName}` : '';
+    const envTag = props.environmentName || 'Production';
+
+    this.loadBalancer = new elbv2.ApplicationLoadBalancer(this, `MaterialRecognitionALB${envSuffix}`, {
       vpc: props.vpc,
       internetFacing: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       http2Enabled: true,
     });
 
-    this.targetGroup = new elbv2.ApplicationTargetGroup(this, 'MaterialRecognitionTG', {
+    this.targetGroup = new elbv2.ApplicationTargetGroup(this, `MaterialRecognitionTG${envSuffix}`, {
       vpc: props.vpc,
       targetType: elbv2.TargetType.INSTANCE,          
       protocol: elbv2.ApplicationProtocol.HTTP,       
@@ -41,7 +45,7 @@ export class AlbModule extends Construct {
 
     this.targetGroup.addTarget(new targets.InstanceTarget(props.ec2Instance, 5000));
 
-    const listener = this.loadBalancer.addListener('MaterialRecognitionListener', {
+    const listener = this.loadBalancer.addListener(`MaterialRecognitionListener${envSuffix}`, {
       port: 80,
       protocol: elbv2.ApplicationProtocol.HTTP,
       defaultAction: elbv2.ListenerAction.forward([this.targetGroup]),
@@ -54,8 +58,8 @@ export class AlbModule extends Construct {
       'Allow ALB to reach app on 5000'
     );
 
-    new cdk.CfnOutput(this, 'AlbDnsName', { value: this.loadBalancer.loadBalancerDnsName });
+    new cdk.CfnOutput(this, `AlbDnsName${envSuffix}`, { value: this.loadBalancer.loadBalancerDnsName });
     cdk.Tags.of(this.loadBalancer).add('Project', 'MaterialRecognitionService');
-    cdk.Tags.of(this.loadBalancer).add('Environment', 'Development');
+    cdk.Tags.of(this.loadBalancer).add('Environment', envTag);
   }
 }

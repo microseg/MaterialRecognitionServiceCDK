@@ -86,7 +86,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       importExisting: props.importExistingResources ?? true, // Default to importing existing resources
     });
 
-    // Create MaskTerial service
+    // Create MaskTerial service (Production)
     const maskterialModule = new MaskTerialModule(this, 'MaskTerialModule', {
       vpc: vpcModule.vpc,
       s3Bucket: s3Module.customerImagesBucket,
@@ -95,12 +95,14 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       enableGPU: false, // CPU-only by default; set true if GPU needed
       modelPath: '/opt/maskterial/models',
       ecrRepositoryUri: ecrModule.repository.repositoryUri,
+      environmentName: 'Production',
     });
 
-    // Create Application Load Balancer for stable endpoint
+    // Create Application Load Balancer for stable endpoint (Production)
     const albModule = new AlbModule(this, 'AlbModule', {
       vpc: vpcModule.vpc,
       ec2Instance: maskterialModule.maskterialService,
+      environmentName: 'Production',
     });
 
     maskterialModule.maskterialService.connections.allowFrom(
@@ -109,11 +111,45 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       'Allow ALB to reach app on 5000'
     );
 
-    // Create API Gateway pointing to ALB for stable endpoint
+    // Create API Gateway pointing to ALB for stable endpoint (Production)
     const apiGatewayModule = new ApiGatewayModule(this, 'ApiGatewayModule', {
       vpc: vpcModule.vpc,
       ec2Instance: maskterialModule.maskterialService,
       targetHost: albModule.loadBalancer.loadBalancerDnsName, // Use ALB DNS name
+      environmentName: 'Production',
+    });
+
+    // =====================
+    // Beta Environment
+    // =====================
+    const maskterialModuleBeta = new MaskTerialModule(this, 'MaskTerialModuleBeta', {
+      vpc: vpcModule.vpc,
+      s3Bucket: s3Module.customerImagesBucket,
+      dynamoDBTable: dynamoDBModule.customerImagesTable,
+      modelsS3Bucket: modelsS3Module.bucket,
+      enableGPU: false,
+      modelPath: '/opt/maskterial/models',
+      ecrRepositoryUri: ecrModule.repository.repositoryUri,
+      environmentName: 'Beta',
+    });
+
+    const albModuleBeta = new AlbModule(this, 'AlbModuleBeta', {
+      vpc: vpcModule.vpc,
+      ec2Instance: maskterialModuleBeta.maskterialService,
+      environmentName: 'Beta',
+    });
+
+    maskterialModuleBeta.maskterialService.connections.allowFrom(
+      albModuleBeta.loadBalancer,
+      ec2.Port.tcp(5000),
+      'Allow ALB to reach app on 5000 (Beta)'
+    );
+
+    const apiGatewayModuleBeta = new ApiGatewayModule(this, 'ApiGatewayModuleBeta', {
+      vpc: vpcModule.vpc,
+      ec2Instance: maskterialModuleBeta.maskterialService,
+      targetHost: albModuleBeta.loadBalancer.loadBalancerDnsName,
+      environmentName: 'Beta',
     });
 
     // Create CI/CD pipeline
@@ -167,6 +203,27 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ApiGatewayHealthUrl', {
       value: `${apiGatewayModule.api.url}health`,
       description: 'Health check endpoint URL',
+    });
+
+    // Beta outputs
+    new cdk.CfnOutput(this, 'BetaApiGatewayUrl', {
+      value: apiGatewayModuleBeta.api.url,
+      description: 'URL of the Beta API Gateway endpoint',
+    });
+
+    new cdk.CfnOutput(this, 'BetaApiGatewayHealthUrl', {
+      value: `${apiGatewayModuleBeta.api.url}health`,
+      description: 'Health check endpoint URL (Beta)',
+    });
+
+    new cdk.CfnOutput(this, 'BetaAlbDnsName', {
+      value: albModuleBeta.loadBalancer.loadBalancerDnsName,
+      description: 'DNS name of Beta ALB',
+    });
+
+    new cdk.CfnOutput(this, 'BetaDeploymentInstanceId', {
+      value: maskterialModuleBeta.maskterialService.instanceId,
+      description: 'ID of the Beta deployment EC2 instance',
     });
 
     // Storage outputs

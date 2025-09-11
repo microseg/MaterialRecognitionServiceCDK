@@ -17,6 +17,7 @@ export interface MaskTerialModuleProps {
   minCapacity?: number;
   maxCapacity?: number;
   ecrRepositoryUri?: string;
+  environmentName?: string;
 }
 
 export class MaskTerialModule extends Construct {
@@ -26,6 +27,9 @@ export class MaskTerialModule extends Construct {
 
   constructor(scope: Construct, id: string, props: MaskTerialModuleProps) {
     super(scope, id);
+
+    const envTag = props.environmentName || 'Production';
+    const envSuffix = props.environmentName ? `-${props.environmentName}` : '';
 
     // Create security group for MaskTerial service
     this.serviceSecurityGroup = new ec2.SecurityGroup(this, 'MaskTerialSecurityGroup', {
@@ -98,7 +102,7 @@ export class MaskTerialModule extends Construct {
       ? (props.instanceType ? new ec2.InstanceType(props.instanceType) : defaultGpuType)
       : (props.instanceType ? new ec2.InstanceType(props.instanceType) : defaultCpuType);
 
-    this.maskterialService = new ec2.Instance(this, 'MaskTerialInstance', {
+    this.maskterialService = new ec2.Instance(this, `MaskTerialInstance${envSuffix}`, {
       vpc: props.vpc,
       vpcSubnets: {
         subnetType: ec2.SubnetType.PUBLIC,
@@ -124,21 +128,21 @@ export class MaskTerialModule extends Construct {
 
     // Add tags for identification
     cdk.Tags.of(this.maskterialService).add('Service', 'MaskTerial');
-    cdk.Tags.of(this.maskterialService).add('Environment', 'Production');
+    cdk.Tags.of(this.maskterialService).add('Environment', envTag);
     cdk.Tags.of(this.maskterialService).add('SSMTarget', 'MaterialRecognitionService');
 
     // Output important information
-    new cdk.CfnOutput(this, 'MaskTerialInstanceId', {
+    new cdk.CfnOutput(this, `MaskTerialInstanceId${envSuffix}`, {
       value: this.maskterialService.instanceId,
       description: 'ID of the MaskTerial EC2 instance',
     });
 
-    new cdk.CfnOutput(this, 'MaskTerialPublicIP', {
+    new cdk.CfnOutput(this, `MaskTerialPublicIP${envSuffix}`, {
       value: this.maskterialService.instancePublicIp,
       description: 'Public IP of the MaskTerial EC2 instance',
     });
 
-    new cdk.CfnOutput(this, 'MaskTerialServiceURL', {
+    new cdk.CfnOutput(this, `MaskTerialServiceURL${envSuffix}`, {
       value: `http://${this.maskterialService.instancePublicIp}:5000`,
       description: 'URL of the MaskTerial service',
     });

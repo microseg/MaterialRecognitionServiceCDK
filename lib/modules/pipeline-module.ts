@@ -25,6 +25,7 @@ export class PipelineModule extends Construct {
   public readonly artifactBucket: s3.Bucket;
   public readonly buildProject: codebuild.PipelineProject;
   public readonly deployProject: codebuild.PipelineProject;
+  public readonly deployProjectBeta: codebuild.PipelineProject;
   public readonly ecrRepository: ecr.IRepository;
 
   constructor(scope: Construct, id: string, props: PipelineModuleProps) {
@@ -112,8 +113,7 @@ export class PipelineModule extends Construct {
               'ls -la',
               'echo "Searching for Dockerfile..."',
               'find . -maxdepth 4 -name Dockerfile -print || true',
-              'DOCKERFILE_PATH=$(find . -maxdepth 4 -path "*/MaterialRecognitionService/MaterialRecognitionService/Dockerfile.cpu" | head -n1)',
-              'if [ -z "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 2 -name Dockerfile.cpu | head -n1); fi',
+              'DOCKERFILE_PATH=$(find . -maxdepth 4 -path "*/MaterialRecognitionService/MaterialRecognitionService/Dockerfile" | head -n1)',
               'if [ -z "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 2 -name Dockerfile | head -n1); fi',
               'echo "Using DOCKERFILE_PATH=$DOCKERFILE_PATH"',
               'if [ -z "$DOCKERFILE_PATH" ] || [ ! -f "$DOCKERFILE_PATH" ]; then echo "Dockerfile not found"; exit 1; fi',
@@ -189,8 +189,48 @@ export class PipelineModule extends Construct {
                   "docker pull $REPO:latest",
                   "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
                   "docker rm -f material-recognition || true",
-                  "docker run -d --restart unless-stopped -p 127.0.0.1:5000:5000 --name material-recognition $REPO:latest",
-                  "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/simple-test && exit 0; echo waiting...; sleep 2; done",
+                  "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition $REPO:latest",
+                  "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/health && exit 0; echo waiting...; sleep 2; done",
+                  "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
+                ]'`
+            ],
+          },
+        },
+      }),
+    });
+
+    // Beta deploy project
+    this.deployProjectBeta = new codebuild.PipelineProject(this, 'Beta_Deploy', {
+      projectName: 'MaterialRecognitionBetaDeploy',
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_5_0,
+      },
+      environmentVariables: {
+        ENVIRONMENT:  { value: "Beta" },
+        SSM_TARGET:   { value: "MaterialRecognitionService" },
+        ECR_REPO_URI:     { value: this.ecrRepository.repositoryUri },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          build: {
+            commands: [
+              `aws ssm send-command \
+                --targets "Key=tag:SSMTarget,Values=$SSM_TARGET" \
+                          "Key=tag:Environment,Values=$ENVIRONMENT" \
+                --document-name "AWS-RunShellScript" \
+                --comment "Deploy latest container (Beta)" \
+                --parameters 'commands=[
+                  "set -euo pipefail",
+                  "ACCOUNT=${account}",
+                  "REGION=${region}",
+                  "REPO=${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service",
+                  "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
+                  "docker pull $REPO:latest",
+                  "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
+                  "docker rm -f material-recognition || true",
+                  "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition $REPO:latest",
+                  "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/health && exit 0; echo waiting...; sleep 2; done",
                   "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
                 ]'`
             ],
@@ -201,6 +241,21 @@ export class PipelineModule extends Construct {
 
     // Allow deploy project to use SSM and ECR
     this.deployProject.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'ssm:SendCommand',
+        'ssm:GetCommandInvocation',
+        'ssm:ListCommandInvocations',
+        'ec2:DescribeInstances',
+        'ecr:GetAuthorizationToken',
+        'ecr:BatchCheckLayerAvailability',
+        'ecr:GetDownloadUrlForLayer',
+        'ecr:BatchGetImage',
+        'sts:GetCallerIdentity',
+      ],
+      resources: ['*'],
+    }));
+
+    this.deployProjectBeta.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'ssm:SendCommand',
         'ssm:GetCommandInvocation',
@@ -247,6 +302,25 @@ export class PipelineModule extends Construct {
               project: this.buildProject,
               input: sourceOutput,
               outputs: [buildOutput],
+            }),
+          ],
+        },
+        {
+          stageName: 'Beta',
+          actions: [
+            new codepipeline_actions.CodeBuildAction({
+              actionName: 'Beta_Deploy',
+              project: this.deployProjectBeta,
+              input: buildOutput,
+            }),
+          ],
+        },
+        {
+          stageName: 'Approval',
+          actions: [
+            new codepipeline_actions.ManualApprovalAction({
+              actionName: 'Manual_Approval',
+              // You can optionally add notification options here, e.g. externalEntityLink/additionalInformation
             }),
           ],
         },
