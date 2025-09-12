@@ -137,15 +137,8 @@ export class MaskTerialModule extends Construct {
       description: 'ID of the MaskTerial EC2 instance',
     });
 
-    new cdk.CfnOutput(this, `MaskTerialPublicIP${envSuffix}`, {
-      value: this.maskterialService.instancePublicIp,
-      description: 'Public IP of the MaskTerial EC2 instance',
-    });
-
-    new cdk.CfnOutput(this, `MaskTerialServiceURL${envSuffix}`, {
-      value: `http://${this.maskterialService.instancePublicIp}:5000`,
-      description: 'URL of the MaskTerial service',
-    });
+    // Note: We avoid outputting instance PublicIp directly to keep stack updates resilient
+    // when networking configuration changes (e.g., NAT removal). Use ALB DNS instead.
   }
 
   private generateUserData(props: MaskTerialModuleProps): string {

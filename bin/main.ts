@@ -18,6 +18,7 @@ const enableStorageAutoScaling = app.node.tryGetContext('enableStorageAutoScalin
 
 // Infrastructure configuration
 const elasticIpAllocationId = app.node.tryGetContext('elasticIpAllocationId') || 'eipalloc-00be8bd306afb1cf7';
+const enableNatGateway = app.node.tryGetContext('enableNatGateway');
 
 new MaterialRecognitionServiceStack(app, 'MaterialRecognitionServiceStack', {
   githubTokenSecretArn,
@@ -30,5 +31,6 @@ new MaterialRecognitionServiceStack(app, 'MaterialRecognitionServiceStack', {
   enableStorageAutoScaling,
   // Infrastructure configuration
   elasticIpAllocationId,
+  enableNatGateway: enableNatGateway !== undefined ? (String(enableNatGateway).toLowerCase() !== 'false') : true,
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
 });

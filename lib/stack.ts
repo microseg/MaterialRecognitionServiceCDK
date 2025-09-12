@@ -24,6 +24,8 @@ export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   elasticIpAllocationId?: string; // Elastic IP allocation ID for stable IP
   // Import existing resources configuration
   importExistingResources?: boolean; // Import existing resources instead of creating new ones
+  // Networking cost control
+  enableNatGateway?: boolean; // default true; set false in testing to save cost
 }
 
 export class MaterialRecognitionServiceStack extends cdk.Stack {
@@ -34,6 +36,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     const vpcModule = new VpcModule(this, 'VpcModule', {
       vpcCidr: '10.0.0.0/16',
       maxAzs: 2,
+      enableNatGateway: props.enableNatGateway ?? true,
     });
     
     // Create ECR repository for Docker images
