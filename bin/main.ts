@@ -15,6 +15,9 @@ const githubBranch = app.node.tryGetContext('githubBranch') || 'preview';
 const s3BucketName = app.node.tryGetContext('s3BucketName') || 'matsight-customer-images';
 const dynamoDBTableName = app.node.tryGetContext('dynamoDBTableName') || 'CustomerImages';
 const enableStorageAutoScaling = app.node.tryGetContext('enableStorageAutoScaling') !== false;
+// Beta storage configuration
+const betaS3BucketName = app.node.tryGetContext('betaS3BucketName') || 'matsight-customer-images-dev';
+const betaDynamoDBTableName = app.node.tryGetContext('betaDynamoDBTableName') || 'CustomerImages-dev';
 
 // Infrastructure configuration
 const elasticIpAllocationId = app.node.tryGetContext('elasticIpAllocationId') || 'eipalloc-00be8bd306afb1cf7';
@@ -28,6 +31,8 @@ new MaterialRecognitionServiceStack(app, 'MaterialRecognitionServiceStack', {
   // Storage configuration
   s3BucketName,
   dynamoDBTableName,
+  betaS3BucketName,
+  betaDynamoDBTableName,
   enableStorageAutoScaling,
   // Infrastructure configuration
   elasticIpAllocationId,

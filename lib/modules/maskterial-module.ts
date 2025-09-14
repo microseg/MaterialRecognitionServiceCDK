@@ -18,6 +18,8 @@ export interface MaskTerialModuleProps {
   maxCapacity?: number;
   ecrRepositoryUri?: string;
   environmentName?: string;
+  ssmTarget?: string;
+  envVariables?: { [key: string]: string };
 }
 
 export class MaskTerialModule extends Construct {
@@ -129,7 +131,7 @@ export class MaskTerialModule extends Construct {
     // Add tags for identification
     cdk.Tags.of(this.maskterialService).add('Service', 'MaskTerial');
     cdk.Tags.of(this.maskterialService).add('Environment', envTag);
-    cdk.Tags.of(this.maskterialService).add('SSMTarget', 'MaterialRecognitionService');
+    cdk.Tags.of(this.maskterialService).add('SSMTarget', props.ssmTarget ?? 'MaterialRecognitionService');
 
     // Output important information
     new cdk.CfnOutput(this, `MaskTerialInstanceId${envSuffix}`, {
@@ -142,8 +144,10 @@ export class MaskTerialModule extends Construct {
   }
 
   private generateUserData(props: MaskTerialModuleProps): string {
-    const modelPath = props.modelPath || '/opt/maskterial/models';
     const useEcr = !!props.ecrRepositoryUri;
+    const envContent = props.envVariables
+      ? Object.entries(props.envVariables).map(([k, v]) => `${k}=${v}`).join('\n')
+      : '';
   
     return `#!/bin/bash
   set -euxo pipefail
@@ -164,13 +168,8 @@ export class MaskTerialModule extends Construct {
   
   # .env provides runtime configuration (compose will read it)
   cat > .env << 'EOF'
-  S3_BUCKET_NAME=${props.s3Bucket.bucketName}
-  DYNAMODB_TABLE_NAME=${props.dynamoDBTable.tableName}
-  AWS_DEFAULT_REGION=${cdk.Stack.of(this).region}
-  MODEL_PATH=${modelPath}
-  ENABLE_GPU=${props.enableGPU ? 'true' : 'false'}
-  MODELS_S3_BUCKET=${props.modelsS3Bucket?.bucketName || 'matsight-maskterial-models'}
-  EOF
+${envContent}
+EOF
   
   # Data directory
   mkdir -p ./data
@@ -182,18 +181,18 @@ export class MaskTerialModule extends Construct {
   aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${props.ecrRepositoryUri!.split('/')[0]}
   
   cat > docker-compose.yml <<EOF
-  version: '3.8'
-  services:
-    maskterial:
-      image: ${props.ecrRepositoryUri}:latest
-      ports:
-        - "5000:5000"
-      restart: unless-stopped
-      env_file:
-        - .env
-      volumes:
-        - ./data:/opt/maskterial/data
-  EOF
+version: '3.8'
+services:
+  maskterial:
+    image: ${props.ecrRepositoryUri}:latest
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/opt/maskterial/data
+EOF
   
   docker compose -f docker-compose.yml up -d
   ` : `
@@ -208,29 +207,29 @@ export class MaskTerialModule extends Construct {
   # Note: Must use unquoted EOF here to expand DOCKERFILE_NAME;
   # But to avoid .env variables being expanded by shell here, environment variables are passed to container via env_file.
   cat > docker-compose.yml <<EOF
-  version: '3.8'
-  services:
-    maskterial:
-      build:
-        context: .
-        dockerfile: ${'${DOCKERFILE_NAME}'}
-      ports:
-        - "5000:5000"
-      restart: unless-stopped
-      env_file:
-        - .env
-      volumes:
-        - ./data:/opt/maskterial/data
-  EOF
+version: '3.8'
+services:
+  maskterial:
+    build:
+      context: .
+      dockerfile: ${'${DOCKERFILE_NAME}'}
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/opt/maskterial/data
+EOF
   
   docker compose -f docker-compose.yml up -d --build
   `}
   
   # Health check script
   cat > /opt/maskterial/health_check.sh << 'EOF'
-  #!/bin/bash
-  curl -sf http://127.0.0.1:5000/health >/dev/null
-  EOF
+#!/bin/bash
+curl -sf http://127.0.0.1:5000/health >/dev/null
+EOF
   chmod +x /opt/maskterial/health_check.sh
   echo "*/5 * * * * /opt/maskterial/health_check.sh" | crontab -
   

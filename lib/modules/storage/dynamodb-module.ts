@@ -140,7 +140,7 @@ export class DynamoDBModule extends Construct {
    * Create a new DynamoDB table with the specified configuration
    */
   private createNewTable(tableName: string, props: DynamoDBModuleProps): dynamodb.Table {
-    return new dynamodb.Table(this, 'CustomerImagesTable', {
+    const table = new dynamodb.Table(this, 'CustomerImagesTable', {
       tableName,
       partitionKey: {
         name: 'customerID',
@@ -151,11 +151,21 @@ export class DynamoDBModule extends Construct {
         type: dynamodb.AttributeType.STRING,
       },
       billingMode: props.billingMode ?? dynamodb.BillingMode.PAY_PER_REQUEST,
-      pointInTimeRecovery: props.enablePointInTimeRecovery ?? true,
+      // pointInTimeRecovery is deprecated; configure via L1 CfnTable below
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       stream: props.enableStreaming ? dynamodb.StreamViewType.NEW_AND_OLD_IMAGES : undefined,
       timeToLiveAttribute: 'expiresAt',
     });
+
+    // Configure PITR via L1 construct to avoid deprecation warning
+    const cfnTable = table.node.defaultChild as dynamodb.CfnTable;
+    if (props.enablePointInTimeRecovery ?? true) {
+      cfnTable.pointInTimeRecoverySpecification = {
+        pointInTimeRecoveryEnabled: true,
+      };
+    }
+
+    return table;
   }
 
   public grantReadWriteData(identity: iam.IGrantable): iam.Grant {

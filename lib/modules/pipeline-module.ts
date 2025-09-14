@@ -172,6 +172,7 @@ export class PipelineModule extends Construct {
       },
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
+        env: { shell: 'bash' },
         phases: {
           build: {
             commands: [
@@ -189,7 +190,8 @@ export class PipelineModule extends Construct {
                   "docker pull $REPO:latest",
                   "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
                   "docker rm -f material-recognition || true",
-                  "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition $REPO:latest",
+                  "mkdir -p /opt/maskterial/data",
+                  "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition --env-file /opt/maskterial/.env -v /opt/maskterial/data:/opt/maskterial/data $REPO:latest",
                   "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/health && exit 0; echo waiting...; sleep 2; done",
                   "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
                 ]'`
@@ -212,27 +214,29 @@ export class PipelineModule extends Construct {
       },
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
+        env: { shell: 'bash' },
         phases: {
           build: {
             commands: [
               `aws ssm send-command \
-                --targets "Key=tag:SSMTarget,Values=$SSM_TARGET" \
-                          "Key=tag:Environment,Values=$ENVIRONMENT" \
-                --document-name "AWS-RunShellScript" \
-                --comment "Deploy latest container (Beta)" \
-                --parameters 'commands=[
-                  "set -euo pipefail",
-                  "ACCOUNT=${account}",
-                  "REGION=${region}",
-                  "REPO=${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service",
-                  "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
-                  "docker pull $REPO:latest",
-                  "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
-                  "docker rm -f material-recognition || true",
-                  "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition $REPO:latest",
-                  "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/health && exit 0; echo waiting...; sleep 2; done",
-                  "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
-                ]'`
+                  --targets "Key=tag:SSMTarget,Values=$SSM_TARGET" \
+                            "Key=tag:Environment,Values=$ENVIRONMENT" \
+                  --document-name "AWS-RunShellScript" \
+                  --comment "Deploy latest container (Beta)" \
+                  --parameters 'commands=[
+                    "set -euo pipefail",
+                    "ACCOUNT=${account}",
+                    "REGION=${region}",
+                    "REPO=${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service",
+                    "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
+                    "docker pull $REPO:latest",
+                    "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
+                    "docker rm -f material-recognition || true",
+                    "mkdir -p /opt/maskterial/data",
+                    "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition --env-file /opt/maskterial/.env -v /opt/maskterial/data:/opt/maskterial/data $REPO:latest",
+                    "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/health && exit 0; echo waiting...; sleep 2; done",
+                    "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
+                  ]'`
             ],
           },
         },

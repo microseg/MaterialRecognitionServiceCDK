@@ -19,6 +19,9 @@ export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   // Storage configuration
   s3BucketName?: string;
   dynamoDBTableName?: string;
+  // Beta storage configuration
+  betaS3BucketName?: string;
+  betaDynamoDBTableName?: string;
   enableStorageAutoScaling?: boolean;
   // Infrastructure configuration
   elasticIpAllocationId?: string; // Elastic IP allocation ID for stable IP
@@ -47,7 +50,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       imageScanOnPush: true,
     });
 
-    // Create S3 storage for customer images
+    // Create S3 storage for customer images (Production)
     const s3Module = new S3Module(this, 'S3Module', {
       bucketName: props.s3BucketName || 'matsight-customer-images',
       enableVersioning: true,
@@ -58,7 +61,18 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       importExisting: props.importExistingResources ?? true, // Default to importing existing resources
     });
 
-    // Create DynamoDB table for image metadata
+    // Create S3 storage for customer images (Development/Beta)
+    const s3ModuleDev = new S3Module(this, 'S3ModuleDev', {
+      bucketName: 'matsight-customer-images-dev',
+      enableVersioning: true,
+      enableLifecycleRules: true,
+      retentionDays: 365,
+      corsOrigins: ['*'],
+      enableAccessLogging: true,
+      importExisting: props.importExistingResources ?? true, // Default to importing existing resources
+    });
+
+    // Create DynamoDB table for image metadata (Production)
     const dynamoDBModule = new DynamoDBModule(this, 'DynamoDBModule', {
       tableName: props.dynamoDBTableName || 'CustomerImages',
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -68,6 +82,42 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       maxCapacity: 100,
       enableStreaming: false,
       importExisting: props.importExistingResources ?? true, // Default to importing existing resources
+    });
+
+    // Create DynamoDB table for image metadata (Development/Beta)
+    const dynamoDBModuleDev = new DynamoDBModule(this, 'DynamoDBModuleDev', {
+      tableName: 'CustomerImages-dev',
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      enablePointInTimeRecovery: true,
+      enableAutoScaling: props.enableStorageAutoScaling ?? true,
+      minCapacity: 1,
+      maxCapacity: 100,
+      enableStreaming: false,
+      importExisting: props.importExistingResources ?? true, // Default to importing existing resources
+    });
+
+    // =====================
+    // Beta storage (separate S3 + DynamoDB)
+    // =====================
+    const s3ModuleBeta = new S3Module(this, 'S3ModuleBeta', {
+      bucketName: props.betaS3BucketName || 'matsight-customer-images-dev',
+      enableVersioning: true,
+      enableLifecycleRules: true,
+      retentionDays: 365,
+      corsOrigins: ['*'],
+      enableAccessLogging: true,
+      importExisting: props.importExistingResources ?? true,
+    });
+
+    const dynamoDBModuleBeta = new DynamoDBModule(this, 'DynamoDBModuleBeta', {
+      tableName: props.betaDynamoDBTableName || 'CustomerImages-dev',
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      enablePointInTimeRecovery: true,
+      enableAutoScaling: props.enableStorageAutoScaling ?? true,
+      minCapacity: 1,
+      maxCapacity: 100,
+      enableStreaming: false,
+      importExisting: true, // Import existing dev table
     });
 
     // Create S3 bucket for MaskTerial models
@@ -99,6 +149,16 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       modelPath: '/opt/maskterial/models',
       ecrRepositoryUri: ecrModule.repository.repositoryUri,
       environmentName: 'Production',
+      envVariables: {
+        APP_ENV: 'production',
+        S3_BUCKET_NAME: s3Module.customerImagesBucket.bucketName,
+        DYNAMODB_TABLE_NAME: dynamoDBModule.customerImagesTable.tableName,
+        AWS_DEFAULT_REGION: this.region,
+        MODEL_PATH: '/opt/maskterial/models',
+        ENABLE_GPU: 'false',
+        MODELS_S3_BUCKET: modelsS3Module.bucket.bucketName,
+        PORT: '5000',
+      },
     });
 
     // Create Application Load Balancer for stable endpoint (Production)
@@ -127,13 +187,24 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     // =====================
     const maskterialModuleBeta = new MaskTerialModule(this, 'MaskTerialModuleBeta', {
       vpc: vpcModule.vpc,
-      s3Bucket: s3Module.customerImagesBucket,
-      dynamoDBTable: dynamoDBModule.customerImagesTable,
+      s3Bucket: s3ModuleBeta.customerImagesBucket,
+      dynamoDBTable: dynamoDBModuleBeta.customerImagesTable,
       modelsS3Bucket: modelsS3Module.bucket,
       enableGPU: false,
       modelPath: '/opt/maskterial/models',
       ecrRepositoryUri: ecrModule.repository.repositoryUri,
       environmentName: 'Beta',
+      ssmTarget: 'MaterialRecognitionService',
+      envVariables: {
+        APP_ENV: 'beta',
+        S3_BUCKET_NAME: s3ModuleBeta.customerImagesBucket.bucketName,
+        DYNAMODB_TABLE_NAME: dynamoDBModuleBeta.customerImagesTable.tableName,
+        AWS_DEFAULT_REGION: this.region,
+        MODEL_PATH: '/opt/maskterial/models',
+        ENABLE_GPU: 'false',
+        MODELS_S3_BUCKET: modelsS3Module.bucket.bucketName,
+        PORT: '5000',
+      },
     });
 
     const albModuleBeta = new AlbModule(this, 'AlbModuleBeta', {
@@ -248,6 +319,27 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DynamoDBTableArn', {
       value: dynamoDBModule.customerImagesTable.tableArn,
       description: 'ARN of the DynamoDB table for customer image metadata',
+    });
+
+    // Beta storage outputs
+    new cdk.CfnOutput(this, 'BetaS3BucketName', {
+      value: s3ModuleBeta.customerImagesBucket.bucketName,
+      description: 'Name of the Beta S3 bucket for customer images',
+    });
+
+    new cdk.CfnOutput(this, 'BetaS3BucketArn', {
+      value: s3ModuleBeta.customerImagesBucket.bucketArn,
+      description: 'ARN of the Beta S3 bucket for customer images',
+    });
+
+    new cdk.CfnOutput(this, 'BetaDynamoDBTableName', {
+      value: dynamoDBModuleBeta.customerImagesTable.tableName,
+      description: 'Name of the Beta DynamoDB table for customer image metadata',
+    });
+
+    new cdk.CfnOutput(this, 'BetaDynamoDBTableArn', {
+      value: dynamoDBModuleBeta.customerImagesTable.tableArn,
+      description: 'ARN of the Beta DynamoDB table for customer image metadata',
     });
 
     // MaskTerial outputs
