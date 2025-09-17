@@ -20,6 +20,9 @@ export interface MaskTerialModuleProps {
   environmentName?: string;
   ssmTarget?: string;
   envVariables?: { [key: string]: string };
+  // Cost controls for root volume
+  rootVolumeSizeGiB?: number; // default 50 for general use
+  rootVolumeType?: ec2.EbsDeviceVolumeType; // default GP3
 }
 
 export class MaskTerialModule extends Construct {
@@ -120,8 +123,8 @@ export class MaskTerialModule extends Construct {
       blockDevices: [
         {
           deviceName: '/dev/xvda',
-          volume: ec2.BlockDeviceVolume.ebs(200, {
-            volumeType: ec2.EbsDeviceVolumeType.GP3,
+          volume: ec2.BlockDeviceVolume.ebs(props.rootVolumeSizeGiB ?? 50, {
+            volumeType: props.rootVolumeType ?? ec2.EbsDeviceVolumeType.GP3,
             encrypted: true,
           }),
         },
@@ -148,7 +151,7 @@ export class MaskTerialModule extends Construct {
     const envContent = props.envVariables
       ? Object.entries(props.envVariables).map(([k, v]) => `${k}=${v}`).join('\n')
       : '';
-  
+
     return `#!/bin/bash
   set -euxo pipefail
   
@@ -166,63 +169,30 @@ export class MaskTerialModule extends Construct {
   mkdir -p /opt/maskterial
   cd /opt/maskterial
   
-  # .env provides runtime configuration (compose will read it)
-  cat > .env << 'EOF'
+  # Generate .env file with environment variables
+  cat > .env << EOF
 ${envContent}
 EOF
   
   # Data directory
   mkdir -p ./data
-  
+
   ${useEcr ? `
   # ==== Method A: Pull image from ECR ====
   ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
   REGION=${cdk.Stack.of(this).region}
   aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${props.ecrRepositoryUri!.split('/')[0]}
-  
-  cat > docker-compose.yml <<EOF
-version: '3.8'
-services:
-  maskterial:
-    image: ${props.ecrRepositoryUri}:latest
-    ports:
-      - "5000:5000"
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./data:/opt/maskterial/data
-EOF
-  
-  docker compose -f docker-compose.yml up -d
+  docker pull ${props.ecrRepositoryUri}:latest
+  docker rm -f material-recognition || true
+  docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition -v /opt/maskterial/.env:/app/.env -v ./data:/opt/maskterial/data ${props.ecrRepositoryUri}:latest
   ` : `
   # ==== Method B: Local build (only when no ECR image available) ====
-  # Pull source code (change to specific tag if fixed version needed)
   git clone https://github.com/Jaluus/MaskTerial.git .
   DOCKERFILE_NAME="Dockerfile.cpu"
-  if [ "$(grep -i '^ENABLE_GPU=true' .env || true)" != "" ]; then
-    DOCKERFILE_NAME="Dockerfile"
-  fi
-  
-  # Note: Must use unquoted EOF here to expand DOCKERFILE_NAME;
-  # But to avoid .env variables being expanded by shell here, environment variables are passed to container via env_file.
-  cat > docker-compose.yml <<EOF
-version: '3.8'
-services:
-  maskterial:
-    build:
-      context: .
-      dockerfile: ${'${DOCKERFILE_NAME}'}
-    ports:
-      - "5000:5000"
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./data:/opt/maskterial/data
-EOF
-  
-  docker compose -f docker-compose.yml up -d --build
+  if [ "$ENABLE_GPU" = "true" ]; then DOCKERFILE_NAME="Dockerfile"; fi
+  docker build -t maskterial-local -f $DOCKERFILE_NAME .
+  docker rm -f material-recognition || true
+  docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition -v /opt/maskterial/.env:/app/.env -v ./data:/opt/maskterial/data maskterial-local
   `}
   
   # Health check script

@@ -18,6 +18,8 @@ export interface PipelineModuleProps {
   deploymentInstance: ec2.Instance;
   vpc: ec2.IVpc;
   ecrRepository?: ecr.IRepository; // Add optional ECR repository
+  prodEnv?: { [key: string]: string };
+  betaEnv?: { [key: string]: string };
 }
 
 export class PipelineModule extends Construct {
@@ -45,7 +47,7 @@ export class PipelineModule extends Construct {
     } else {
       // Create ECR repository if not provided
       const ecrModule = new EcrModule(this, 'EcrModule', {
-        repositoryName: 'material-recognition',
+        repositoryName: 'material-recognition-service',
         importExisting: true,
         removalPolicy: cdk.RemovalPolicy.RETAIN,
         imageScanOnPush: true,
@@ -111,17 +113,16 @@ export class PipelineModule extends Construct {
             commands: [
               'echo "PWD=$(pwd)"',
               'ls -la',
-              'echo "Searching for Dockerfile..."',
-              'find . -maxdepth 4 -name Dockerfile -print || true',
-              'DOCKERFILE_PATH=$(find . -maxdepth 4 -path "*/MaterialRecognitionService/MaterialRecognitionService/Dockerfile" | head -n1)',
-              'if [ -z "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 2 -name Dockerfile | head -n1); fi',
-              'echo "Using DOCKERFILE_PATH=$DOCKERFILE_PATH"',
-              'if [ -z "$DOCKERFILE_PATH" ] || [ ! -f "$DOCKERFILE_PATH" ]; then echo "Dockerfile not found"; exit 1; fi',
+              'DOCKERFILE_PATH=MaterialRecognitionService/Dockerfile',
+              'if [ ! -f "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 4 -path "*/MaterialRecognitionService/Dockerfile" -print | head -n1); fi',
+              'if [ -z "$DOCKERFILE_PATH" ] || [ ! -f "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 5 -name Dockerfile -print | head -n1); fi',
+              'if [ -z "$DOCKERFILE_PATH" ] || [ ! -f "$DOCKERFILE_PATH" ]; then echo "Dockerfile not found"; find . -maxdepth 6 -name Dockerfile -print; exit 1; fi',
               'CONTEXT_DIR=$(dirname "$DOCKERFILE_PATH")',
+              'echo "Using DOCKERFILE_PATH=$DOCKERFILE_PATH"',
               'echo "CONTEXT_DIR=$CONTEXT_DIR"',
               'ls -la "$CONTEXT_DIR" || true',
               'echo "Building image $ECR_REPO_URI:$IMAGE_TAG"',
-              'docker build -f "$DOCKERFILE_PATH" -t $ECR_REPO_URI:$IMAGE_TAG "$CONTEXT_DIR"',
+              'docker build --pull -f "$DOCKERFILE_PATH" -t $ECR_REPO_URI:$IMAGE_TAG "$CONTEXT_DIR"',
             ],
           },
           post_build: {
@@ -176,7 +177,9 @@ export class PipelineModule extends Construct {
         phases: {
           build: {
             commands: [
-              `aws ssm send-command \
+              'set -euo pipefail',
+              // Send SSM command and capture CommandId
+              `CMD_ID=$(aws ssm send-command \
                 --targets "Key=tag:SSMTarget,Values=$SSM_TARGET" \
                           "Key=tag:Environment,Values=$ENVIRONMENT" \
                 --document-name "AWS-RunShellScript" \
@@ -185,16 +188,25 @@ export class PipelineModule extends Construct {
                   "set -euo pipefail",
                   "ACCOUNT=${account}",
                   "REGION=${region}",
-                  "REPO=${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service",
+                  "REPO=${this.ecrRepository.repositoryUri}",
                   "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
+                  "docker system prune -af --volumes || true",
                   "docker pull $REPO:latest",
                   "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
                   "docker rm -f material-recognition || true",
+                  "mkdir -p /opt/maskterial",
+                  "if docker run --rm $REPO:latest test -f /app/config/.env.production; then docker run --rm $REPO:latest cat /app/config/.env.production > /opt/maskterial/.env; else echo APP_ENV=production > /opt/maskterial/.env; fi",
                   "mkdir -p /opt/maskterial/data",
-                  "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition --env-file /opt/maskterial/.env -v /opt/maskterial/data:/opt/maskterial/data $REPO:latest",
+                  "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition --env APP_ENV=production --env-file /opt/maskterial/.env -v /opt/maskterial/data:/opt/maskterial/data $REPO:latest",
                   "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/health && exit 0; echo waiting...; sleep 2; done",
                   "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
-                ]'`
+                ]' \
+                --query 'Command.CommandId' --output text)`,
+              'echo "SSM CommandId: $CMD_ID"',
+              // Wait for command completion and fail build on error
+              'for i in $(seq 1 60); do STATUSES=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details --query "CommandInvocations[*].Status" --output text); echo "Statuses: $STATUSES"; if [ -n "$STATUSES" ] && ! echo "$STATUSES" | tr " " "\n" | grep -qE "^(Pending|InProgress|Delayed)$"; then break; fi; sleep 5; done',
+              'if echo "$STATUSES" | tr " " "\n" | grep -qE "(Failed|Cancelled|TimedOut)"; then echo "SSM command failed" >&2; aws ssm list-command-invocations --command-id "$CMD_ID" --details --output table || true; exit 1; fi',
+              'aws ssm list-command-invocations --command-id "$CMD_ID" --details --query "CommandInvocations[*].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails}" --output table || true',
             ],
           },
         },
@@ -209,7 +221,7 @@ export class PipelineModule extends Construct {
       },
       environmentVariables: {
         ENVIRONMENT:  { value: "Beta" },
-        SSM_TARGET:   { value: "MaterialRecognitionService" },
+        SSM_TARGET:   { value: "MaterialRecognitionService-Beta" },
         ECR_REPO_URI:     { value: this.ecrRepository.repositoryUri },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
@@ -218,7 +230,8 @@ export class PipelineModule extends Construct {
         phases: {
           build: {
             commands: [
-              `aws ssm send-command \
+              'set -euo pipefail',
+              `CMD_ID=$(aws ssm send-command \
                   --targets "Key=tag:SSMTarget,Values=$SSM_TARGET" \
                             "Key=tag:Environment,Values=$ENVIRONMENT" \
                   --document-name "AWS-RunShellScript" \
@@ -227,16 +240,26 @@ export class PipelineModule extends Construct {
                     "set -euo pipefail",
                     "ACCOUNT=${account}",
                     "REGION=${region}",
-                    "REPO=${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service",
+                    "REPO=${this.ecrRepository.repositoryUri}",
                     "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
+                    "docker system prune -af --volumes || true",
                     "docker pull $REPO:latest",
                     "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
                     "docker rm -f material-recognition || true",
+                    "mkdir -p /opt/maskterial",
+                    "if docker run --rm $REPO:latest test -f /app/config/.env.beta; then docker run --rm $REPO:latest cat /app/config/.env.beta > /opt/maskterial/.env; fi",
+                    "if [ ! -s /opt/maskterial/.env ]; then echo APP_ENV=beta > /opt/maskterial/.env; echo S3_BUCKET_NAME=matsight-customer-images-dev >> /opt/maskterial/.env; echo DYNAMODB_TABLE_NAME=CustomerImages-dev >> /opt/maskterial/.env; echo AWS_DEFAULT_REGION=$REGION >> /opt/maskterial/.env; echo MODELS_S3_BUCKET=matsight-maskterial-models-v2 >> /opt/maskterial/.env; echo PORT=5000 >> /opt/maskterial/.env; fi",
                     "mkdir -p /opt/maskterial/data",
-                    "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition --env-file /opt/maskterial/.env -v /opt/maskterial/data:/opt/maskterial/data $REPO:latest",
+                    "docker rm -f material-recognition || true",
+                    "docker run -d --restart unless-stopped -p 5000:5000 --name material-recognition --env APP_ENV=beta --env-file /opt/maskterial/.env -v /opt/maskterial/data:/opt/maskterial/data $REPO:latest",
                     "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/health && exit 0; echo waiting...; sleep 2; done",
                     "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
-                  ]'`
+                ]' \
+                --query 'Command.CommandId' --output text)`,
+              'echo "SSM CommandId: $CMD_ID"',
+              'for i in $(seq 1 60); do STATUSES=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details --query "CommandInvocations[*].Status" --output text); echo "Statuses: $STATUSES"; if [ -n "$STATUSES" ] && ! echo "$STATUSES" | tr " " "\n" | grep -qE "^(Pending|InProgress|Delayed)$"; then break; fi; sleep 5; done',
+              'if echo "$STATUSES" | tr " " "\n" | grep -qE "(Failed|Cancelled|TimedOut)"; then echo "SSM command failed" >&2; aws ssm list-command-invocations --command-id "$CMD_ID" --details --output table || true; exit 1; fi',
+              'aws ssm list-command-invocations --command-id "$CMD_ID" --details --query "CommandInvocations[*].{InstanceId:InstanceId,Status:Status,StatusDetails:StatusDetails}" --output table || true',
             ],
           },
         },

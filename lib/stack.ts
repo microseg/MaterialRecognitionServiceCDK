@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 import { PipelineModule } from './modules/pipeline-module';
 import { VpcModule } from './modules/vpc-module';
@@ -159,6 +160,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
         MODELS_S3_BUCKET: modelsS3Module.bucket.bucketName,
         PORT: '5000',
       },
+      rootVolumeSizeGiB: 50,
     });
 
     // Create Application Load Balancer for stable endpoint (Production)
@@ -194,7 +196,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       modelPath: '/opt/maskterial/models',
       ecrRepositoryUri: ecrModule.repository.repositoryUri,
       environmentName: 'Beta',
-      ssmTarget: 'MaterialRecognitionService',
+      ssmTarget: 'MaterialRecognitionService-Beta',
       envVariables: {
         APP_ENV: 'beta',
         S3_BUCKET_NAME: s3ModuleBeta.customerImagesBucket.bucketName,
@@ -205,6 +207,9 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
         MODELS_S3_BUCKET: modelsS3Module.bucket.bucketName,
         PORT: '5000',
       },
+      // Beta instance needs enough space for large Docker layers
+      // Align with Production to avoid pull failures (no space left on device)
+      rootVolumeSizeGiB: 50,
     });
 
     const albModuleBeta = new AlbModule(this, 'AlbModuleBeta', {
@@ -226,6 +231,55 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       environmentName: 'Beta',
     });
 
+    // =====================
+    // Local Dev Access (Beta storage)
+    // =====================
+    const devBetaStoragePolicy = new iam.ManagedPolicy(this, 'DevBetaStoragePolicy', {
+      description: 'Local development access to matsight-customer-images-dev and CustomerImages-dev',
+      statements: [
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['s3:ListBucket'],
+          resources: [s3ModuleBeta.customerImagesBucket.bucketArn],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+          resources: [`${s3ModuleBeta.customerImagesBucket.bucketArn}/*`],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'dynamodb:GetItem',
+            'dynamodb:PutItem',
+            'dynamodb:UpdateItem',
+            'dynamodb:DeleteItem',
+            'dynamodb:Query',
+            'dynamodb:Scan',
+            'dynamodb:BatchGetItem',
+            'dynamodb:BatchWriteItem',
+            'dynamodb:DescribeTable',
+          ],
+          resources: [
+            dynamoDBModuleBeta.customerImagesTable.tableArn,
+            `${dynamoDBModuleBeta.customerImagesTable.tableArn}/index/*`,
+          ],
+        }),
+      ],
+    });
+
+    const devBetaStorageRole = new iam.Role(this, 'DevBetaStorageRole', {
+      assumedBy: new iam.AccountPrincipal(cdk.Stack.of(this).account),
+      description: 'Role for local development to access dev S3/DynamoDB',
+      maxSessionDuration: cdk.Duration.hours(12),
+    });
+    devBetaStorageRole.addManagedPolicy(devBetaStoragePolicy);
+
+    const devBetaStorageDevelopers = new iam.Group(this, 'DevBetaStorageDevelopers', {
+      groupName: 'DevBetaStorageDevelopers',
+    });
+    devBetaStorageDevelopers.addManagedPolicy(devBetaStoragePolicy);
+
     // Create CI/CD pipeline
     const pipelineModule = new PipelineModule(this, 'PipelineModule', {
       githubTokenSecretArn: props.githubTokenSecretArn,
@@ -235,6 +289,26 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       deploymentInstance: maskterialModule.maskterialService,
       vpc: vpcModule.vpc,
       ecrRepository: ecrModule.repository,
+      prodEnv: {
+        APP_ENV: 'production',
+        S3_BUCKET_NAME: s3Module.customerImagesBucket.bucketName,
+        DYNAMODB_TABLE_NAME: dynamoDBModule.customerImagesTable.tableName,
+        AWS_DEFAULT_REGION: this.region,
+        MODEL_PATH: '/opt/maskterial/models',
+        ENABLE_GPU: 'false',
+        MODELS_S3_BUCKET: modelsS3Module.bucket.bucketName,
+        PORT: '5000',
+      },
+      betaEnv: {
+        APP_ENV: 'beta',
+        S3_BUCKET_NAME: s3ModuleBeta.customerImagesBucket.bucketName,
+        DYNAMODB_TABLE_NAME: dynamoDBModuleBeta.customerImagesTable.tableName,
+        AWS_DEFAULT_REGION: this.region,
+        MODEL_PATH: '/opt/maskterial/models',
+        ENABLE_GPU: 'false',
+        MODELS_S3_BUCKET: modelsS3Module.bucket.bucketName,
+        PORT: '5000',
+      },
     });
 
     // Output important information
@@ -340,6 +414,22 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BetaDynamoDBTableArn', {
       value: dynamoDBModuleBeta.customerImagesTable.tableArn,
       description: 'ARN of the Beta DynamoDB table for customer image metadata',
+    });
+
+    // Local dev access outputs
+    new cdk.CfnOutput(this, 'DevBetaStoragePolicyArn', {
+      value: devBetaStoragePolicy.managedPolicyArn,
+      description: 'Attach this policy to your IAM user for local dev access to dev storage',
+    });
+
+    new cdk.CfnOutput(this, 'DevBetaStorageRoleArn', {
+      value: devBetaStorageRole.roleArn,
+      description: 'Optional role to assume for local dev access to dev storage',
+    });
+
+    new cdk.CfnOutput(this, 'DevBetaStorageDevelopersGroupName', {
+      value: devBetaStorageDevelopers.groupName,
+      description: 'Add your IAM user to this group for dev S3/DynamoDB access',
     });
 
     // MaskTerial outputs
