@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as codepipeline_actions from 'aws-cdk-lib/aws-codepipeline-actions';
-// import * as codedeploy from 'aws-cdk-lib/aws-codedeploy';
+import * as codedeploy from 'aws-cdk-lib/aws-codedeploy';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -17,14 +17,15 @@ export interface PipelineModuleProps {
   githubBranch: string;
   deploymentInstance: ec2.Instance;
   vpc: ec2.IVpc;
-  ecrRepository?: ecr.IRepository; // Add optional ECR repository
+  ecrRepository?: ecr.IRepository;
+  codeDeployApplication?: codedeploy.IServerApplication;
+  codeDeployDeploymentGroup?: codedeploy.IServerDeploymentGroup;
 }
 
 export class PipelineModule extends Construct {
   public readonly pipeline: codepipeline.Pipeline;
   public readonly artifactBucket: s3.Bucket;
   public readonly buildProject: codebuild.PipelineProject;
-  public readonly deployProject: codebuild.PipelineProject;
   public readonly ecrRepository: ecr.IRepository;
 
   constructor(scope: Construct, id: string, props: PipelineModuleProps) {
@@ -98,39 +99,32 @@ export class PipelineModule extends Construct {
         phases: {
           pre_build: {
             commands: [
-              'echo "Logging into ECR"',
-              'ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)',
-              'aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com',
-              'COMMIT_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)',
-              'IMAGE_TAG=${COMMIT_ID:-latest}',
-              'echo Using tag $IMAGE_TAG',
+              "echo \"Logging into ECR\"",
+              "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)",
+              "aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com",
+              "COMMIT_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)",
+              "IMAGE_TAG=${COMMIT_ID:-latest}",
+              "echo Using tag $IMAGE_TAG"
             ],
           },
           build: {
             commands: [
-              'echo "PWD=$(pwd)"',
-              'ls -la',
-              'echo "Searching for Dockerfile..."',
-              'find . -maxdepth 4 -name Dockerfile -print || true',
-              'DOCKERFILE_PATH=$(find . -maxdepth 4 -path "*/MaterialRecognitionService/MaterialRecognitionService/Dockerfile.cpu" | head -n1)',
-              'if [ -z "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 2 -name Dockerfile.cpu | head -n1); fi',
-              'if [ -z "$DOCKERFILE_PATH" ]; then DOCKERFILE_PATH=$(find . -maxdepth 2 -name Dockerfile | head -n1); fi',
-              'echo "Using DOCKERFILE_PATH=$DOCKERFILE_PATH"',
-              'if [ -z "$DOCKERFILE_PATH" ] || [ ! -f "$DOCKERFILE_PATH" ]; then echo "Dockerfile not found"; exit 1; fi',
-              'CONTEXT_DIR=$(dirname "$DOCKERFILE_PATH")',
-              'echo "CONTEXT_DIR=$CONTEXT_DIR"',
-              'ls -la "$CONTEXT_DIR" || true',
-              'echo "Building image $ECR_REPO_URI:$IMAGE_TAG"',
-              'docker build -f "$DOCKERFILE_PATH" -t $ECR_REPO_URI:$IMAGE_TAG "$CONTEXT_DIR"',
+              "echo \"PWD=$(pwd)\"",
+              "rm -rf MaskTerialSource",
+              "git clone https://github.com/microseg/MaskTerial.git MaskTerialSource",
+              "echo \"Using existing Dockerfile.cpu from MaskTerial repository...\"",
+              "echo \"Building MaskTerial CPU image $ECR_REPO_URI:$IMAGE_TAG\"",
+              "docker build -f MaskTerialSource/Dockerfile.cpu -t $ECR_REPO_URI:$IMAGE_TAG MaskTerialSource",
+              "docker tag $ECR_REPO_URI:$IMAGE_TAG $ECR_REPO_URI:latest",
+              "docker push $ECR_REPO_URI:$IMAGE_TAG",
+              "docker push $ECR_REPO_URI:latest",
+              "printf \"{\"imageTag\":\"%s\"}\" \"${IMAGE_TAG}\" > imageDetail.json",
+              "echo \"imageDetail.json:\" && cat imageDetail.json"
             ],
           },
           post_build: {
             commands: [
-              'docker push $ECR_REPO_URI:$IMAGE_TAG',
-              'docker tag  $ECR_REPO_URI:$IMAGE_TAG $ECR_REPO_URI:latest',
-              'docker push $ECR_REPO_URI:latest',
-              'printf \'{"imageTag":"%s"}\' "$IMAGE_TAG" > imageDetail.json',
-              'echo "imageDetail.json:" && cat imageDetail.json',
+              'echo "Build stage completed. Image pushed to ECR."',
             ],
           },
         },
@@ -157,113 +151,74 @@ export class PipelineModule extends Construct {
       resources: ['*'],
     }));
 
-    const account = cdk.Stack.of(this).account;
-    const region = cdk.Stack.of(this).region;
-
-    this.deployProject = new codebuild.PipelineProject(this, 'Production_Deploy', {
-      projectName: 'MaterialRecognitionProductionDeploy',
-      environment: {
-        buildImage: codebuild.LinuxBuildImage.STANDARD_5_0,
-      },
-      environmentVariables: {
-        ENVIRONMENT:  { value: "Production" },
-        SSM_TARGET:   { value: "MaterialRecognitionService" },
-        ECR_REPO_URI:     { value: this.ecrRepository.repositoryUri },
-      },
-      buildSpec: codebuild.BuildSpec.fromObject({
-        version: '0.2',
-        phases: {
-          build: {
-            commands: [
-              `aws ssm send-command \
-                --targets "Key=tag:SSMTarget,Values=$SSM_TARGET" \
-                          "Key=tag:Environment,Values=$ENVIRONMENT" \
-                --document-name "AWS-RunShellScript" \
-                --comment "Deploy latest container" \
-                --parameters 'commands=[
-                  "set -euo pipefail",
-                  "ACCOUNT=${account}",
-                  "REGION=${region}",
-                  "REPO=${account}.dkr.ecr.${region}.amazonaws.com/material-recognition-service",
-                  "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com",
-                  "docker pull $REPO:latest",
-                  "for c in $(docker ps -q --filter publish=5000); do docker rm -f $c; done",
-                  "docker rm -f material-recognition || true",
-                  "docker run -d --restart unless-stopped -p 127.0.0.1:5000:5000 --name material-recognition $REPO:latest",
-                  "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/simple-test && exit 0; echo waiting...; sleep 2; done",
-                  "echo FAIL: service not healthy; docker logs --tail 200 material-recognition >&2; exit 1"
-                ]'`
-            ],
-          },
-        },
-      }),
-    });
-
-    // Allow deploy project to use SSM and ECR
-    this.deployProject.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'ssm:SendCommand',
-        'ssm:GetCommandInvocation',
-        'ssm:ListCommandInvocations',
-        'ec2:DescribeInstances',
-        'ecr:GetAuthorizationToken',
-        'ecr:BatchCheckLayerAvailability',
-        'ecr:GetDownloadUrlForLayer',
-        'ecr:BatchGetImage',
-        'sts:GetCallerIdentity',
-      ],
-      resources: ['*'],
-    }));
-
 
     const sourceOutput = new codepipeline.Artifact('SourceCode');
     const buildOutput  = new codepipeline.Artifact('BuildOutput');
+
+    // Build pipeline stages
+    const stages: codepipeline.StageProps[] = [
+      {
+        stageName: 'Source',
+        actions: [
+          new codepipeline_actions.GitHubSourceAction({
+            actionName: 'GitHub_Source',
+            owner: props.githubOwner,
+            repo: props.githubRepo,
+            branch: props.githubBranch,
+            oauthToken: cdk.SecretValue.secretsManager('github-token'),
+            output: sourceOutput,
+            variablesNamespace: 'SourceVariables',
+            trigger: codepipeline_actions.GitHubTrigger.WEBHOOK,
+          }),
+        ],
+      },
+      {
+        stageName: 'Build',
+        actions: [
+          new codepipeline_actions.CodeBuildAction({
+            actionName: 'BuildImage',
+            project: this.buildProject,
+            input: sourceOutput,
+            outputs: [buildOutput],
+          }),
+        ],
+      },
+    ];
+
+    // Add CodeDeploy stage if available
+    if (props.codeDeployDeploymentGroup) {
+      stages.push({
+        stageName: 'Deploy',
+        actions: [
+          new codepipeline_actions.CodeDeployServerDeployAction({
+            actionName: 'DeployToEC2',
+            input: sourceOutput,
+            deploymentGroup: props.codeDeployDeploymentGroup,
+          }),
+        ],
+      });
+    }
 
     // Create the pipeline
     this.pipeline = new codepipeline.Pipeline(this, 'MaterialRecognitionPipeline', {
       pipelineName: 'MaterialRecognitionServicePipeline',
       role: pipelineRole,
       artifactBucket: this.artifactBucket,
-      stages: [
-        {
-          stageName: 'Source',
-          actions: [
-            new codepipeline_actions.GitHubSourceAction({
-              actionName: 'GitHub_Source',
-              owner: props.githubOwner,
-              repo: props.githubRepo,
-              branch: props.githubBranch,
-              oauthToken: cdk.SecretValue.secretsManager('github-token'),
-              output: sourceOutput,
-              variablesNamespace: 'SourceVariables',
-            }),
-          ],
-        },
-        {
-          stageName: 'Build',
-          actions: [
-            new codepipeline_actions.CodeBuildAction({
-              actionName: 'BuildImage',
-              project: this.buildProject,
-              input: sourceOutput,
-              outputs: [buildOutput],
-            }),
-          ],
-        },
-        {
-          stageName: 'Production',
-          actions: [
-            new codepipeline_actions.CodeBuildAction({
-              actionName: 'Production_Deploy',
-              project: this.deployProject,
-              input: buildOutput,
-            }),
-          ],
-        },
-      ],
+      stages: stages,
     });
 
     // Tag the pipeline
     cdk.Tags.of(this.pipeline).add('Project', 'MaterialRecognitionService');
   }
 }
+
+
+
+
+
+
+
+
+
+
+

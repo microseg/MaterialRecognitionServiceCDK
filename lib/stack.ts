@@ -10,6 +10,7 @@ import { EcrModule } from './modules/ecr-module';
 import { AlbModule } from './modules/alb-module';
 import { S3Module, DynamoDBModule, ModelsS3Module } from './modules/storage';
 import { MaskTerialModule } from './modules/maskterial-module';
+import { CodeDeployModule } from './modules/codedeploy-module';
 
 export interface MaterialRecognitionServiceStackProps extends cdk.StackProps {
   githubTokenSecretArn: string;
@@ -101,12 +102,13 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
     const albModule = new AlbModule(this, 'AlbModule', {
       vpc: vpcModule.vpc,
       ec2Instance: maskterialModule.maskterialService,
+      // domainName: 'labpencil.com', // 暂时注释掉，先配置DNS
     });
 
     maskterialModule.maskterialService.connections.allowFrom(
       albModule.loadBalancer,
-      ec2.Port.tcp(5000),
-      'Allow ALB to reach app on 5000'
+      ec2.Port.tcp(8080),
+      'Allow ALB to reach Nginx on 8080'
     );
 
     // Create API Gateway pointing to ALB for stable endpoint
@@ -114,6 +116,13 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       vpc: vpcModule.vpc,
       ec2Instance: maskterialModule.maskterialService,
       targetHost: albModule.loadBalancer.loadBalancerDnsName, // Use ALB DNS name
+    });
+
+    // Create CodeDeploy application and deployment group
+    const codeDeployModule = new CodeDeployModule(this, 'CodeDeployModule', {
+      ec2Instance: maskterialModule.maskterialService,
+      applicationName: 'MaskTerial-Application',
+      deploymentGroupName: 'MaskTerial-Production',
     });
 
     // Create CI/CD pipeline
@@ -125,6 +134,8 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
       deploymentInstance: maskterialModule.maskterialService,
       vpc: vpcModule.vpc,
       ecrRepository: ecrModule.repository,
+      codeDeployApplication: codeDeployModule.application,
+      codeDeployDeploymentGroup: codeDeployModule.deploymentGroup,
     });
 
     // Output important information
@@ -135,12 +146,7 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'PublicSubnets', {
       value: vpcModule.vpc.publicSubnets.map(subnet => subnet.subnetId).join(','),
-      description: 'IDs of the public subnets',
-    });
-
-    new cdk.CfnOutput(this, 'PrivateSubnets', {
-      value: vpcModule.vpc.privateSubnets.map(subnet => subnet.subnetId).join(','),
-      description: 'IDs of the private subnets (for future API Gateway VPC Link)',
+      description: 'IDs of the public subnets (NAT Gateway disabled for cost optimization)',
     });
 
     new cdk.CfnOutput(this, 'DeploymentInstanceId', {
