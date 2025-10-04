@@ -166,7 +166,7 @@ export class MaskTerialModule extends Construct {
       blockDevices: [
         {
           deviceName: '/dev/xvda',
-          volume: ec2.BlockDeviceVolume.ebs(200, {
+          volume: ec2.BlockDeviceVolume.ebs(50, {
             volumeType: ec2.EbsDeviceVolumeType.GP3,
             encrypted: true,
           }),
