@@ -107,8 +107,8 @@ export class MaterialRecognitionServiceStack extends cdk.Stack {
 
     maskterialModule.maskterialService.connections.allowFrom(
       albModule.loadBalancer,
-      ec2.Port.tcp(8080),
-      'Allow ALB to reach Nginx on 8080'
+      ec2.Port.tcp(8000),
+      'Allow ALB to reach Material Recognition Service on 5000'
     );
 
     // Create API Gateway pointing to ALB for stable endpoint

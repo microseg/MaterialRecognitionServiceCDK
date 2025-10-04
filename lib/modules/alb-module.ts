@@ -24,13 +24,15 @@ export class AlbModule extends Construct {
       internetFacing: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       http2Enabled: true,
+      deletionProtection: true, // 启用删除保护
+      idleTimeout: cdk.Duration.minutes(5), // 增加空闲超时到5分钟
     });
 
     this.targetGroup = new elbv2.ApplicationTargetGroup(this, 'MaterialRecognitionTG', {
       vpc: props.vpc,
       targetType: elbv2.TargetType.INSTANCE,          
       protocol: elbv2.ApplicationProtocol.HTTP,       
-      port: 8080,                                     
+      port: 8000,                                     
       healthCheck: {
         path: '/',                              
         healthyHttpCodes: '200',
@@ -42,7 +44,7 @@ export class AlbModule extends Construct {
       deregistrationDelay: cdk.Duration.seconds(10),
     });
 
-    this.targetGroup.addTarget(new targets.InstanceTarget(props.ec2Instance, 8080));
+    this.targetGroup.addTarget(new targets.InstanceTarget(props.ec2Instance, 8000));
 
     // 如果提供了域名，创建SSL证书
     if (props.domainName) {
@@ -79,8 +81,8 @@ export class AlbModule extends Construct {
 
     props.ec2Instance.connections.allowFrom(
       this.loadBalancer,
-      ec2.Port.tcp(8080),
-      'Allow ALB to reach Nginx on 8080'
+      ec2.Port.tcp(8000),
+      'Allow ALB to reach Material Recognition Service on 8000'
     );
 
     new cdk.CfnOutput(this, 'AlbDnsName', { value: this.loadBalancer.loadBalancerDnsName });
@@ -99,6 +101,8 @@ export class AlbModule extends Construct {
     }
     
     cdk.Tags.of(this.loadBalancer).add('Project', 'MaterialRecognitionService');
-    cdk.Tags.of(this.loadBalancer).add('Environment', 'Development');
+    cdk.Tags.of(this.loadBalancer).add('Environment', 'Production');
+    cdk.Tags.of(this.loadBalancer).add('Protection', 'Critical-Infrastructure');
+    cdk.Tags.of(this.loadBalancer).add('DeletionProtection', 'Enabled');
   }
 }

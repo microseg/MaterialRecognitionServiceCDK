@@ -41,13 +41,6 @@ export class MaskTerialModule extends Construct {
       'Allow SSH access'
     );
 
-    // Allow inbound traffic on port 80 (HTTP for frontend)
-    this.serviceSecurityGroup.addIngressRule(
-      ec2.Peer.anyIpv4(),
-      ec2.Port.tcp(8080),
-      'Allow HTTP access to Nginx on 8080'
-    );
-
     // Allow inbound traffic on port 8000 (Backend API)
     this.serviceSecurityGroup.addIngressRule(
       ec2.Peer.anyIpv4(),
@@ -73,6 +66,21 @@ export class MaskTerialModule extends Construct {
     // Grant models S3 bucket access if provided
     if (props.modelsS3Bucket) {
       props.modelsS3Bucket.grantRead(this.serviceRole);
+      // 添加更详细的S3模型存储桶权限
+      this.serviceRole.addToPolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          's3:ListBucket',
+          's3:GetObject',
+          's3:GetObjectVersion',
+          's3:GetObjectAcl',
+          's3:GetObjectVersionAcl'
+        ],
+        resources: [
+          props.modelsS3Bucket.bucketArn,
+          `${props.modelsS3Bucket.bucketArn}/*`
+        ]
+      }));
     }
     
     // Grant ECR permissions for pulling Docker images
@@ -106,6 +114,35 @@ export class MaskTerialModule extends Construct {
       resources: ['*'],
     }));
 
+    // 添加S3模型缓存相关权限
+    this.serviceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        's3:ListBucket',
+        's3:GetObject',
+        's3:GetObjectVersion',
+        's3:GetObjectAcl',
+        's3:GetObjectVersionAcl',
+        's3:HeadObject'
+      ],
+      resources: [
+        'arn:aws:s3:::matsight-maskterial-models-v2',
+        'arn:aws:s3:::matsight-maskterial-models-v2/*'
+      ]
+    }));
+
+    // 添加ALB访问权限
+    this.serviceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'elasticloadbalancing:DescribeLoadBalancers',
+        'elasticloadbalancing:DescribeTargetGroups',
+        'elasticloadbalancing:DescribeTargetHealth',
+        'elasticloadbalancing:DescribeListeners'
+      ],
+      resources: ['*']
+    }));
+
     const defaultCpuType = new ec2.InstanceType('t3.medium')
     const defaultGpuType = new ec2.InstanceType('g4dn.xlarge')
     // Create EC2 instance for MaskTerial service
@@ -137,10 +174,17 @@ export class MaskTerialModule extends Construct {
       ],
     });
 
-    // Add tags for identification
+    // 启用EC2实例删除保护
+    const cfnInstance = this.maskterialService.node.defaultChild as ec2.CfnInstance;
+    cfnInstance.addPropertyOverride('DisableApiTermination', true);
+
+    // Add tags for identification and protection
     cdk.Tags.of(this.maskterialService).add('Service', 'MaskTerial');
     cdk.Tags.of(this.maskterialService).add('Environment', 'Production');
     cdk.Tags.of(this.maskterialService).add('SSMTarget', 'MaterialRecognitionService');
+    cdk.Tags.of(this.maskterialService).add('Protection', 'Critical-Infrastructure');
+    cdk.Tags.of(this.maskterialService).add('DeletionProtection', 'Enabled');
+    cdk.Tags.of(this.maskterialService).add('BackupRequired', 'Yes');
 
     // Output important information
     new cdk.CfnOutput(this, 'MaskTerialInstanceId', {
@@ -169,6 +213,9 @@ export class MaskTerialModule extends Construct {
   yum update -y
   yum install -y git python3 python3-pip docker aws-cli nodejs npm ruby wget
   
+  # Install Python dependencies for S3 access
+  pip3 install boto3 botocore
+  
   systemctl enable --now docker
   
   # Install CodeDeploy Agent
@@ -189,10 +236,53 @@ export class MaskTerialModule extends Construct {
   git clone https://github.com/microseg/MaskTerial.git /opt/MaskTerial
   cd /opt/MaskTerial
   
+  # Set environment variables for S3 model access
+  echo "export S3_BUCKET_NAME=matsight-maskterial-models-v2" >> /etc/environment
+  echo "export S3_CLASSIFICATION_MODELS_PATH=s3://matsight-maskterial-models-v2/classification_models" >> /etc/environment
+  echo "export S3_SEGMENTATION_MODELS_PATH=s3://matsight-maskterial-models-v2/segmentation_models" >> /etc/environment
+  echo "export S3_POSTPROCESSING_MODELS_PATH=s3://matsight-maskterial-models-v2/postprocessing_models" >> /etc/environment
+  echo "export AWS_DEFAULT_REGION=${cdk.Stack.of(this).region}" >> /etc/environment
+  echo "export MODEL_CACHE_DIR=/tmp/maskterial_models_cache" >> /etc/environment
+  
+  # Create and set permissions for model cache directory
+  mkdir -p /tmp/maskterial_models_cache
+  chmod 755 /tmp/maskterial_models_cache
+  chown ec2-user:ec2-user /tmp/maskterial_models_cache
+  
+  # Create swap space for memory-intensive operations
+  if [ ! -f /swapfile ]; then
+    fallocate -l 2G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  fi
+  
+  # Test S3 access
+  aws s3 ls s3://matsight-maskterial-models-v2/ || echo "S3 bucket not accessible yet"
+  
+  # Test Python S3 access
+  python3 -c "
+import boto3
+import sys
+try:
+    s3 = boto3.client('s3')
+    response = s3.list_objects_v2(Bucket='matsight-maskterial-models-v2', MaxKeys=1)
+    print('✅ Python boto3 S3 access successful')
+except Exception as e:
+    print(f'❌ Python boto3 S3 access failed: {e}')
+    sys.exit(1)
+" || echo "Python S3 access test failed, but continuing..."
+  
   # Initial deployment using production configuration
   docker compose -f docker-compose.prod.yml up -d
   
+  # Validate service including S3 access
+  echo "Validating MaskTerial service and S3 access..."
+  ./scripts/validate_service.sh
+  
   echo "MaskTerial full stack setup completed!"
+  echo "S3 model access configured for bucket: matsight-maskterial-models-v2"
   echo "CodeDeploy agent is installed and ready for deployments"
   `;
   }
