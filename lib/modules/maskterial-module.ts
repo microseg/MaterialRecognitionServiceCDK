@@ -150,6 +150,21 @@ export class MaskTerialModule extends Construct {
       ? (props.instanceType ? new ec2.InstanceType(props.instanceType) : defaultGpuType)
       : (props.instanceType ? new ec2.InstanceType(props.instanceType) : defaultCpuType);
 
+    // Create replacement EBS volume (50GB GP3)
+    const replacementEbsVolume = new ec2.Volume(this, 'MaskTerialReplacementEBSVolume', {
+      availabilityZone: props.vpc.availabilityZones[0],
+      size: cdk.Size.gibibytes(50),
+      volumeType: ec2.EbsDeviceVolumeType.GP3,
+      encrypted: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Add tags to replacement EBS volume
+    cdk.Tags.of(replacementEbsVolume).add('Service', 'MaskTerial');
+    cdk.Tags.of(replacementEbsVolume).add('Environment', 'Production');
+    cdk.Tags.of(replacementEbsVolume).add('BackupRequired', 'Yes');
+    cdk.Tags.of(replacementEbsVolume).add('Purpose', 'ReplacementVolume');
+
     this.maskterialService = new ec2.Instance(this, 'MaskTerialInstance', {
       vpc: props.vpc,
       vpcSubnets: {
@@ -163,20 +178,25 @@ export class MaskTerialModule extends Construct {
       securityGroup: this.serviceSecurityGroup,
       role: this.serviceRole,
       userData: ec2.UserData.custom(this.generateUserData(props)),
-      blockDevices: [
-        {
-          deviceName: '/dev/xvda',
-          volume: ec2.BlockDeviceVolume.ebs(50, {
-            volumeType: ec2.EbsDeviceVolumeType.GP3,
-            encrypted: true,
-          }),
-        },
-      ],
+      // Configure root volume to 50GB
+      blockDevices: [{
+        deviceName: '/dev/xvda',
+        volume: ec2.BlockDeviceVolume.ebs(50, {
+          volumeType: ec2.EbsDeviceVolumeType.GP2,
+          encrypted: true,
+        }),
+      }],
     });
 
-    // 启用EC2实例删除保护
     const cfnInstance = this.maskterialService.node.defaultChild as ec2.CfnInstance;
     cfnInstance.addPropertyOverride('DisableApiTermination', true);
+
+    // Attach the replacement EBS volume to the EC2 instance
+    new ec2.CfnVolumeAttachment(this, 'MaskTerialReplacementEBSVolumeAttachment', {
+      volumeId: replacementEbsVolume.volumeId,
+      instanceId: this.maskterialService.instanceId,
+      device: '/dev/sdg', // Use different device to avoid conflict with existing volume
+    });
 
     // Add tags for identification and protection
     cdk.Tags.of(this.maskterialService).add('Service', 'MaskTerial');
@@ -200,6 +220,21 @@ export class MaskTerialModule extends Construct {
     new cdk.CfnOutput(this, 'MaskTerialServiceURL', {
       value: `http://${this.maskterialService.instancePublicIp}`,
       description: 'URL of the MaskTerial full stack (frontend + backend)',
+    });
+
+    new cdk.CfnOutput(this, 'MaskTerialReplacementEBSVolumeId', {
+      value: replacementEbsVolume.volumeId,
+      description: 'ID of the replacement MaskTerial EBS volume',
+    });
+
+    new cdk.CfnOutput(this, 'MaskTerialReplacementEBSVolumeSize', {
+      value: '50',
+      description: 'Size of the replacement MaskTerial EBS volume in GiB',
+    });
+
+    new cdk.CfnOutput(this, 'MaskTerialReplacementEBSMountPoint', {
+      value: '/opt/maskterial-replacement-storage',
+      description: 'Mount point for the replacement MaskTerial EBS volume',
     });
   }
 
@@ -249,13 +284,71 @@ export class MaskTerialModule extends Construct {
   chmod 755 /tmp/maskterial_models_cache
   chown ec2-user:ec2-user /tmp/maskterial_models_cache
   
-  # Create swap space for memory-intensive operations
+  # Create swap space for memory-intensive operations (6GB total)
   if [ ! -f /swapfile ]; then
     fallocate -l 2G /swapfile
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
     echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  fi
+  
+  # Create additional 4GB swap space for model inference
+  if [ ! -f /swapfile2 ]; then
+    fallocate -l 4G /swapfile2
+    chmod 600 /swapfile2
+    mkswap /swapfile2
+    swapon /swapfile2
+    echo '/swapfile2 none swap sw 0 0' >> /etc/fstab
+  fi
+  
+  # Optimize swap usage for better performance
+  echo 'vm.swappiness=60' >> /etc/sysctl.d/99-swappiness.conf
+  sysctl -p /etc/sysctl.d/99-swappiness.conf
+  
+  # Auto-mount replacement EBS volume if attached
+  # Wait for replacement EBS volume to be available
+  while [ ! -e /dev/sdg ] && [ ! -e /dev/nvme2n1 ]; do
+    echo "Waiting for replacement EBS volume to be attached..."
+    sleep 5
+  done
+  
+  # Determine the actual device name for replacement volume
+  REPLACEMENT_EBS_DEVICE=""
+  if [ -e /dev/sdg ]; then
+    REPLACEMENT_EBS_DEVICE="/dev/sdg"
+  elif [ -e /dev/nvme2n1 ]; then
+    REPLACEMENT_EBS_DEVICE="/dev/nvme2n1"
+  fi
+  
+  if [ -n "$REPLACEMENT_EBS_DEVICE" ]; then
+    echo "Replacement EBS volume found at $REPLACEMENT_EBS_DEVICE"
+    
+    # Check if the volume has a filesystem
+    if ! blkid $REPLACEMENT_EBS_DEVICE; then
+      echo "Creating filesystem on replacement EBS volume..."
+      mkfs.ext4 $REPLACEMENT_EBS_DEVICE
+    fi
+    
+    # Create mount point for replacement volume
+    mkdir -p /opt/maskterial-replacement-storage
+    
+    # Mount the replacement volume
+    mount $REPLACEMENT_EBS_DEVICE /opt/maskterial-replacement-storage
+    
+    # Add to fstab for persistent mounting
+    if ! grep -q "/opt/maskterial-replacement-storage" /etc/fstab; then
+      echo "$REPLACEMENT_EBS_DEVICE /opt/maskterial-replacement-storage ext4 defaults,nofail 0 2" >> /etc/fstab
+    fi
+    
+    # Set proper permissions
+    chown ec2-user:ec2-user /opt/maskterial-replacement-storage
+    chmod 755 /opt/maskterial-replacement-storage
+    
+    echo "Replacement EBS volume successfully mounted at /opt/maskterial-replacement-storage"
+    echo "You can now migrate data from old volume and detach it manually"
+  else
+    echo "Replacement EBS volume not found, continuing without additional storage..."
   fi
   
   # Test S3 access
